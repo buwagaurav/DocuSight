@@ -14,7 +14,7 @@ from typing import Callable
 
 from ..config import FAST_MODEL
 from ..store import Chunk
-from .client import get_client, response_text
+from .client import effort, get_client, response_text
 
 MAX_CHUNKS = 400
 DOC_CHARS = 300_000
@@ -33,7 +33,7 @@ def contextualize(doc_text: str, chunks: list[Chunk], progress: Callable[[float]
             resp = client.messages.create(
                 model=FAST_MODEL,
                 max_tokens=1024,
-                output_config={"effort": "low"},
+                output_config={"effort": effort("low")},
                 messages=[{"role": "user", "content": [
                     doc_block,
                     {"type": "text", "text": f"<chunk>\n{c.text[:3000]}\n</chunk>\nGive a short (1-2 sentence) context "

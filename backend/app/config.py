@@ -24,8 +24,18 @@ DOCS_DIR.mkdir(parents=True, exist_ok=True)
 
 # --- LLM -------------------------------------------------------------------
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-LLM_MODEL = os.getenv("LLM_MODEL", "claude-opus-5-5")          # answering + extraction
-FAST_MODEL = os.getenv("FAST_MODEL", "claude-haiku-5-5")       # contextual chunk headers
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/anthropic")  # Anthropic-compatible API
+
+# Model spec "provider:model" (provider = anthropic | deepseek); a bare "claude-…" name means anthropic.
+# FINSIGHT_MODEL is accepted as an alias of LLM_MODEL.
+_SPEC = os.getenv("LLM_MODEL") or os.getenv("FINSIGHT_MODEL") or "anthropic:claude-opus-5-5"
+LLM_PROVIDER, LLM_MODEL = _SPEC.split(":", 1) if ":" in _SPEC else ("anthropic", _SPEC)
+LLM_PROVIDER = LLM_PROVIDER.strip().lower()
+if LLM_PROVIDER not in {"anthropic", "deepseek"}:
+    raise ValueError(f"Unsupported LLM provider '{LLM_PROVIDER}' in model spec '{_SPEC}' (use anthropic: or deepseek:)")
+# contextual chunk headers: a small fast model from the same provider
+FAST_MODEL = os.getenv("FAST_MODEL") or ("claude-haiku-5-5" if LLM_PROVIDER == "anthropic" else LLM_MODEL)
 MAX_IMAGES_PER_TURN = int(os.getenv("MAX_IMAGES_PER_TURN", "4"))
 AGENT_MAX_STEPS = int(os.getenv("AGENT_MAX_STEPS", "6"))
 

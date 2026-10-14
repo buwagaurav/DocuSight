@@ -12,9 +12,9 @@ import json
 import re
 from typing import Any
 
-from ..config import LLM_MODEL
+from ..config import LLM_MODEL, LLM_PROVIDER
 from ..store import store
-from .client import FALLBACK_KW, describe_error, get_client, image_block, llm_available, response_text
+from .client import describe_error, effort, image_block, llm_available, messages_api, model_label, provider_kwargs, response_text
 
 MAX_CONTEXT_CHARS = 400_000   # ~100k tokens of document text per extraction call
 MAX_EXTRACT_IMAGES = 12
@@ -117,6 +117,50 @@ def _excel_context(doc_id: str) -> tuple[list[dict[str, Any]], str]:
     return [{"type": "text", "text": text}], coverage
 
 
+def _parse_json(text: str) -> dict[str, Any]:
+    """Tolerant JSON parse: models without strict schema enforcement may wrap output in prose or ``` fences."""
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        start, end = text.find("{"), text.rfind("}")
+        if start < 0 or end <= start:
+            raise
+        return json.loads(text[start:end + 1])
+
+
+def _s(v: Any) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return v if isinstance(v, str) else json.dumps(v) if isinstance(v, (dict, list)) else str(v)
+
+
+def normalize_extraction(data: dict[str, Any]) -> dict[str, Any]:
+    """Coerce model output to exactly the shape SCHEMA describes (and the UI relies on)."""
+    out: dict[str, Any] = {}
+    props = SCHEMA["properties"]
+    for key, spec in props.items():
+        val = data.get(key)
+        if spec["type"] == "string":
+            out[key] = _s(val)
+        elif spec["items"].get("type") == "string":
+            out[key] = [_s(v) for v in val if v not in (None, "")] if isinstance(val, list) else []
+        else:
+            item_props = spec["items"]["properties"]
+            rows = []
+            for item in val if isinstance(val, list) else []:
+                if not isinstance(item, dict):
+                    continue
+                row = {k: _s(item.get(k)) for k in item_props}
+                for k, p in item_props.items():
+                    if "enum" in p and row[k] not in p["enum"]:
+                        row[k] = p["enum"][-1]  # e.g. importance -> "normal", entity type -> "other"
+                rows.append(row)
+            out[key] = rows
+    return out
+
+
 def run_extraction(doc_id: str) -> None:
     meta = store.docs.get(doc_id)
     if not meta:
@@ -129,20 +173,25 @@ def run_extraction(doc_id: str) -> None:
         content, coverage = _pdf_context(doc_id) if meta.kind == "pdf" else _excel_context(doc_id)
         kind = "PDF document" if meta.kind == "pdf" else "spreadsheet"
         content.append({"type": "text", "text": PROMPT.format(kind=kind, coverage=coverage)})
-        with get_client().beta.messages.stream(
+        if LLM_PROVIDER != "anthropic":
+            # Only Claude enforces output_config.format server-side; other providers accept the
+            # parameter but may answer in prose, so the schema has to be in the prompt itself.
+            content.append({"type": "text", "text": "Respond with ONLY one JSON object (no markdown, no prose, no code "
+                            f"fences) that validates against this JSON Schema:\n{json.dumps(SCHEMA)}"})
+        with messages_api().stream(
             model=LLM_MODEL,
             max_tokens=32000,
-            output_config={"effort": "medium", "format": {"type": "json_schema", "schema": SCHEMA}},
+            output_config={"effort": effort("medium"), "format": {"type": "json_schema", "schema": SCHEMA}},
             messages=[{"role": "user", "content": content}],
-            **FALLBACK_KW,
+            **provider_kwargs(),
         ) as stream:
             resp = stream.get_final_message()
         if resp.stop_reason == "refusal":
             raise RuntimeError("The model declined to process this document.")
         if resp.stop_reason == "max_tokens":
             raise RuntimeError("Extraction output was truncated (document too dense).")
-        data = json.loads(response_text(resp))
-        data["_engine"] = LLM_MODEL
+        data = normalize_extraction(_parse_json(response_text(resp)))
+        data["_engine"] = model_label()
         store.update(doc_id, extraction=data, extraction_status="ready")
     except Exception as e:
         print(f"[extract] {doc_id}: {e}")
@@ -179,7 +228,7 @@ def heuristic_extraction(doc_id: str) -> dict[str, Any]:
         "document_type": "PDF document" if meta.kind == "pdf" else "Spreadsheet",
         "title": meta.filename, "language": "",
         "summary": f"{meta.filename}: {what}, {len(meta.tables)} table(s) detected, {meta.n_chunks} indexed chunks. "
-                   "Connect an Anthropic API key for AI-generated summaries, insights and full field extraction.",
+                   "Add an LLM API key in .env (Anthropic or DeepSeek) for AI-generated summaries, insights and full field extraction.",
         "key_fields": fields, "metrics": metrics, "entities": [], "dates": [],
         "sections": [{"title": t["title"], "description": f"{t['n_rows']} rows × {t['n_cols']} columns",
                       "source": t["source"]} for t in meta.tables[:20]],

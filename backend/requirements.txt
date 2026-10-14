@@ -5,7 +5,7 @@ python-multipart>=0.0.9
 python-dotenv>=1.0
 
 # LLM (Claude — vision + tool use)
-anthropic>=0.40
+anthropic>=0.40               # Messages API client, used for Claude and for DeepSeek's Anthropic-compatible endpoint
 
 # Parsing
 pymupdf>=1.24

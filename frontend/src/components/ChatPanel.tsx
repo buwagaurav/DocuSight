@@ -453,7 +453,7 @@ export default function ChatPanel({
             <p className="mx-auto mt-1 max-w-xs text-sm text-ink-2">Answers cite their sources. Numbers from spreadsheets are computed with SQL, and charts are read visually.</p>
             {!llmAvailable && (
               <div className="mx-auto mt-4 max-w-xs rounded-lg bg-warn-soft px-3 py-2 text-left text-xs text-warn">
-                No Anthropic API key detected. Set <code>ANTHROPIC_API_KEY</code> in <code>.env</code> and restart the backend to enable chat.
+                No LLM API key detected. Set <code>DEEPSEEK_API_KEY</code> or <code>ANTHROPIC_API_KEY</code> in <code>.env</code> and restart the backend to enable chat.
               </div>
             )}
             <div className="mt-5 flex flex-col items-stretch gap-2">

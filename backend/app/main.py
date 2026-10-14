@@ -14,9 +14,9 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import pipeline
-from .config import COLPALI_MODEL, CORS_ORIGINS, LLM_MODEL, RERANK_MODEL
+from .config import COLPALI_MODEL, CORS_ORIGINS, RERANK_MODEL
 from .llm.agent import cache, run_agent
-from .llm.client import llm_available
+from .llm.client import llm_available, model_label
 from .retrieval.colpali import colpali
 from .retrieval.hybrid import retriever
 from .retrieval.models import embedder, loaded_embedding_info
@@ -49,7 +49,7 @@ def _doc(doc_id: str):
 def health() -> dict[str, Any]:
     return {
         "ok": True,
-        "llm": {"available": llm_available(), "model": LLM_MODEL},
+        "llm": {"available": llm_available(), "model": model_label()},
         "colpali": {"available": colpali.available, "model": COLPALI_MODEL, "error": colpali.error},
         "embedding_model": loaded_embedding_info(),
         "rerank_model": RERANK_MODEL,

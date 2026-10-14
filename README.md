@@ -23,7 +23,7 @@ Drop in a PDF or Excel file. DocuSight immediately parses it and shows every key
 ## Quick start
 
 ```bash
-cp .env.example .env            # then put your ANTHROPIC_API_KEY in .env
+cp .env.example .env            # then pick a provider and add its key (see "LLM providers" below)
 ./run.sh                        # installs deps on first run, starts both servers
 open http://localhost:3000
 ```
@@ -38,7 +38,7 @@ The first PDF you index downloads the model. `vidore/colpali-v1.3` is about 6 GB
 
 Try it with the bundled messy samples: `.venv/bin/python scripts/make_samples.py` creates `samples/`.
 
-Without an API key, parsing, tables, SQL, search and a basic heuristic extraction still work. Claude powers the full extraction and the chat.
+Without an API key, parsing, tables, SQL, search and a basic heuristic extraction still work. The configured LLM (DeepSeek or Claude) powers the full extraction and the chat.
 
 ## RAG techniques implemented
 
@@ -74,12 +74,26 @@ These follow the techniques catalogued in the [aman.ai RAG primer](https://aman.
 
 The **Retrieval Lab** tab shows which signals (BM25 / Dense / ColPali / Rerank) found each hit, and their ranks. Every chat answer lists the techniques it used.
 
+## LLM providers
+
+All AI features (extraction, chat, contextual retrieval) use one model, chosen by a `provider:model` spec. `FINSIGHT_MODEL` is accepted as an alias of `LLM_MODEL`.
+
+| Spec | Key | Notes |
+|---|---|---|
+| `deepseek:deepseek-flash` | `DEEPSEEK_API_KEY` | DeepSeek V4.1 Flash. Low cost, 1M context, **reads page images**. Uses DeepSeek's Anthropic-compatible API, so the same agent code runs on both providers. |
+| `anthropic:claude-opus-5-5` | `ANTHROPIC_API_KEY` | Strictest structured output, plus server-side refusal fallback |
+| `deepseek:deepseek-v4-pro` | `DEEPSEEK_API_KEY` | Text only: charts, scans and page images are not seen |
+
+Provider differences are handled in `llm/client.py`:
+- **Effort:** the UI's low/medium/high maps to DeepSeek's low/high/max.
+- **Structured output:** DeepSeek accepts `output_config.format` but doesn't enforce it, so for DeepSeek the JSON schema is also put in the prompt, and every extraction result is validated and normalized.
+
 ## Configuration (`.env`)
 
 | Variable | Default | Notes |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | — | Required for extraction and chat |
-| `LLM_MODEL` | `claude-opus-5-5` | Answering and extraction |
+| `LLM_MODEL` / `FINSIGHT_MODEL` | `anthropic:claude-opus-5-5` | `provider:model` used for extraction and chat |
+| `DEEPSEEK_API_KEY` / `ANTHROPIC_API_KEY` | — | Key for the chosen provider |
 | `COLPALI_MODEL` | `vidore/colpali-v1.3` | Also `vidore/colqwen2.5-v0.2`, `vidore/colSmol-500M` |
 | `COLPALI_ENABLED` | `auto` | `false` to skip visual indexing |
 | `CONTEXTUAL_RETRIEVAL` | `false` | `true` = LLM chunk context with Haiku (extra cost) |

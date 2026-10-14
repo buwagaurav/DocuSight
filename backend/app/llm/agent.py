@@ -21,7 +21,7 @@ from ..retrieval.hybrid import retriever
 from ..retrieval.models import embed_queries
 from ..store import store
 from ..tables import run_sql
-from .client import FALLBACK_KW, describe_error, get_client, image_block, llm_available
+from .client import describe_error, effort, image_block, llm_available, messages_api, model_label, provider_kwargs
 
 FULL_CONTEXT_CHARS = 60_000
 MAX_IMAGES_TOTAL = 10
@@ -328,8 +328,8 @@ def _tool_label(name: str, args: dict[str, Any]) -> str:
 def run_agent(question: str, history: list[dict[str, str]], doc_ids: list[str], opts: dict[str, Any]
               ) -> Iterator[dict[str, Any]]:
     if not llm_available():
-        yield {"type": "error", "message": "No Anthropic credentials found. Add ANTHROPIC_API_KEY to the .env file in the "
-                                           "project root and restart the backend. (Extraction, tables, search and SQL work without it.)"}
+        yield {"type": "error", "message": f"No API key for {model_label()}. Add it to the .env file in the project root "
+                                           "and restart the backend. (Extraction, tables, search and SQL work without it.)"}
         return
     doc_ids = store.ready_ids(doc_ids)
     if not doc_ids:
@@ -372,12 +372,12 @@ def run_agent(question: str, history: list[dict[str, str]], doc_ids: list[str], 
     user_content.append({"type": "text", "text": question})
     messages.append({"role": "user", "content": user_content})
 
-    client = get_client()
+    api = messages_api()
     answer = ""
     for step in range(AGENT_MAX_STEPS + 1):
         last = step == AGENT_MAX_STEPS
         try:
-            with client.beta.messages.stream(
+            with api.stream(
                 model=LLM_MODEL,
                 max_tokens=32000,
                 system=system,
@@ -385,9 +385,9 @@ def run_agent(question: str, history: list[dict[str, str]], doc_ids: list[str], 
                 tool_choice={"type": "none"} if last else {"type": "auto"},
                 messages=messages,
                 thinking={"type": "adaptive", "display": "summarized"},
-                output_config={"effort": opts.get("effort", "medium")},
+                output_config={"effort": effort(opts.get("effort", "medium"))},
                 cache_control={"type": "ephemeral"},
-                **FALLBACK_KW,
+                **provider_kwargs(),
             ) as stream:
                 for ev in stream:
                     if ev.type == "text":
