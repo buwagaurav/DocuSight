@@ -1,6 +1,6 @@
 # DocuSight — multimodal RAG for complex PDFs & spreadsheets
 
-Drop in a PDF or Excel file. DocuSight immediately parses it and shows every key field, metric, table, date and insight. It also flags anomalies. You can then ask it anything. Answers cite their sources, and numbers from spreadsheets are computed exactly with SQL. Charts, scans and stamps are read visually through **ColPali** and Claude's vision.
+Drop in a PDF or Excel file. DocuSight immediately parses it and shows every key field, metric, table, date and insight. It also flags anomalies. You can then ask it anything. Answers cite their sources, and numbers from spreadsheets are computed exactly with SQL. Charts, scans and stamps are found by **ColPali** visual search and read by the LLM's vision (DeepSeek or Claude).
 
 ```
 ┌──────────── Next.js + React + TypeScript (frontend/) ─────────────┐
@@ -20,25 +20,201 @@ Drop in a PDF or Excel file. DocuSight immediately parses it and shows every key
 └────────────────────────────────────────────────────────────────────┘
 ```
 
-## Quick start
+## Run it locally: step by step
+
+The first start downloads the AI models automatically, so you **don't need EmbeddingGemma (or any model) installed beforehand**. Step 5 covers machines that can't download from the internet.
+
+### What you need
+
+| | Minimum | Recommended |
+|---|---|---|
+| OS | macOS, Linux, or Windows (via WSL2) | Apple Silicon Mac or an NVIDIA GPU (ColPali is much faster) |
+| Python | 3.10+ | 3.12 |
+| Node.js | 20.9+ | 22 or newer |
+| RAM | 8 GB (ColPali off) | 16 GB (everything on) |
+| Free disk | 3 GB (ColPali off) | 10 GB (everything on) |
+| API key | — | DeepSeek **or** Anthropic (for AI extraction and chat) |
+
+Without an API key, parsing, tables, SQL, search and a basic extraction still work. Only the AI summary, field extraction and chat need a key.
+
+### Step 1: Get the code
 
 ```bash
-cp .env.example .env            # then pick a provider and add its key (see "LLM providers" below)
-./run.sh                        # installs deps on first run, starts both servers
-open http://localhost:3000
+git clone https://github.com/buwagaurav/DocuSight.git
+cd DocuSight
 ```
 
-ColPali (recommended):
+### Step 2: Install the backend (Python)
 
 ```bash
-.venv/bin/pip install -r backend/requirements-colpali.txt
+python3 -m venv .venv
+source .venv/bin/activate              # Windows (WSL): same command
+pip install --upgrade pip
+pip install -r backend/requirements.txt
 ```
 
-The first PDF you index downloads the model. `vidore/colpali-v1.3` is about 6 GB. On a laptop, set `COLPALI_MODEL=vidore/colSmol-500M` (about 1 GB). It runs on Apple Silicon (MPS), CUDA or CPU.
+This installs FastAPI, the PDF/Excel parsers, DuckDB, PyTorch, sentence-transformers (for EmbeddingGemma) and fastembed (for the fallback embedder and the reranker). It takes a few minutes.
 
-Try it with the bundled messy samples: `.venv/bin/python scripts/make_samples.py` creates `samples/`.
+**Optional but recommended: ColPali (visual page search).**
 
-Without an API key, parsing, tables, SQL, search and a basic heuristic extraction still work. The configured LLM (DeepSeek or Claude) powers the full extraction and the chat.
+```bash
+pip install -r backend/requirements-colpali.txt
+```
+
+Skip this if your machine has less than 16 GB of RAM. Everything else still works, and the app just won't search pages by how they look.
+
+### Step 3: Install the frontend (Node.js)
+
+```bash
+cd frontend
+npm install
+cd ..
+```
+
+### Step 4: Configure `.env`
+
+```bash
+cp .env.example .env
+```
+
+Open `.env` and set **one** LLM provider:
+
+```bash
+# Option A: DeepSeek (low cost, reads page images)
+LLM_MODEL=deepseek:deepseek-flash
+DEEPSEEK_API_KEY=sk-your-deepseek-key
+
+# Option B: Claude
+# LLM_MODEL=anthropic:claude-opus-5-5
+# ANTHROPIC_API_KEY=sk-ant-your-key
+```
+
+Keep the model lines that match your machine:
+
+```bash
+EMBED_MODEL=google/embeddinggemma-2    # downloaded automatically (≈1.4 GB)
+COLPALI_MODEL=vidore/colpali-v1.3      # ≈5.5 GB; use vidore/colSmol-500M (≈0.95 GB) on smaller machines
+# COLPALI_ENABLED=false                # uncomment if you skipped Step 2's ColPali install
+```
+
+`.env` is git-ignored, so your keys never get committed.
+
+### Step 5: Get the models (EmbeddingGemma and ColPali)
+
+**You don't have to do anything if the machine has internet.** Models download from Hugging Face the first time they're needed and are cached in `~/.cache/huggingface/` for every later run:
+
+| Model | Used for | Size | Downloaded when |
+|---|---|---|---|
+| `google/embeddinggemma-2` | Text embeddings (semantic search) | ≈1.4 GB | Backend starts |
+| `vidore/colpali-v1.3` + `vidore/colpaligemma-3b-pt-448-base` | ColPali visual page search | ≈5.5 GB | First PDF is uploaded |
+| `Xenova/ms-marco-MiniLM-L-6-v2` | Reranking | ≈90 MB | First search |
+
+None of these models are gated, so **no Hugging Face account or token is needed**. Setting `HF_TOKEN=...` in `.env` only raises download rate limits.
+
+Pick the option that fits your situation:
+
+**A) Download ahead of time.** Useful so the first start is instant, or before going offline:
+
+```bash
+source .venv/bin/activate
+hf download google/embeddinggemma-2
+hf download vidore/colpali-v1.3
+hf download vidore/colpaligemma-3b-pt-448-base
+```
+
+**B) The machine has no internet (or a firewall blocks Hugging Face).** On any machine with internet, download into a folder:
+
+```bash
+hf download google/embeddinggemma-2 --local-dir models/embeddinggemma-2
+```
+
+Copy the `models/` folder into the project on the offline machine, then set in `.env`:
+
+```bash
+EMBED_MODEL=./models/embeddinggemma-2   # relative paths are resolved from the project root
+HF_HUB_OFFLINE=1                        # never try to reach Hugging Face
+```
+
+For ColPali offline, either copy the whole `~/.cache/huggingface/hub` folder after running option A, or set `COLPALI_ENABLED=false`.
+
+**C) The machine is too small for EmbeddingGemma, or you want the lightest setup.** Use the built-in lightweight embedder (≈130 MB, ONNX, CPU-only):
+
+```bash
+EMBED_MODEL=BAAI/bge-small-en-v1.5
+COLPALI_ENABLED=false
+```
+
+If EmbeddingGemma fails to load for any reason, DocuSight **switches to `bge-small-en-v1.5` automatically** and logs `[embed] could not load ... falling back`, so the app always starts. Changing `EMBED_MODEL` later is safe, because existing documents are re-embedded automatically on the next search.
+
+### Step 6: Start DocuSight
+
+**One command** (macOS/Linux/WSL):
+
+```bash
+./run.sh
+```
+
+This starts the backend on **:8000** and the frontend on **:3000**, and installs any missing dependencies first. Stop both with `Ctrl+C`.
+
+**Or start them manually in two terminals:**
+
+```bash
+# Terminal 1 — backend
+source .venv/bin/activate
+cd backend
+python -X faulthandler -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+
+# Terminal 2 — frontend
+cd frontend
+npm run dev
+```
+
+The first backend start takes about 1–2 minutes while EmbeddingGemma downloads. Later starts take a few seconds.
+
+### Step 7: Check that it works
+
+```bash
+curl http://localhost:8000/api/health
+```
+
+You should see something like:
+
+```json
+{"llm": {"available": true, "model": "deepseek:deepseek-flash"},
+ "colpali": {"available": true, "model": "vidore/colpali-v1.3"},
+ "embedding_model": "google/embeddinggemma-2 (768d)"}
+```
+
+`"embedding_model": "... (loading)"` just means the model is still downloading or loading; wait a minute.
+
+Then open **http://localhost:3000**. The header badges show the active LLM and whether ColPali is on.
+
+### Step 8: Try it with sample files
+
+```bash
+.venv/bin/python scripts/make_samples.py     # creates samples/acme_sales_fy2025.xlsx and samples/northwind_invoice.pdf
+```
+
+Drag both files onto the upload box. Within about 15 seconds the **Overview** tab fills in with extracted fields. Try these chat questions:
+
+- *"What was the total revenue per sales rep after discounts? Show a chart."* (answered with SQL plus a chart)
+- *"Which quarter missed the 95% delivery target by the most?"* (answered from the chart image)
+- *"What's the invoice total due?"* (answered from page 1)
+
+The first PDF also triggers the ColPali download and indexing, which runs in the background. The sidebar shows "ColPali…" until it's done.
+
+### Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| UI shows "Can't reach the backend" | The backend isn't running on :8000. Check Terminal 1 for errors. |
+| `Address already in use` | Another process is using the port: `lsof -i :8000` (or `:3000`) and stop it. |
+| Header shows "LLM: no API key" | Set `DEEPSEEK_API_KEY` or `ANTHROPIC_API_KEY` in `.env` and restart the backend. |
+| `embedding_model` stays `(loading)` for a long time | The download is slow or blocked. Use Step 5 option A, B or C. |
+| Log shows `could not load google/embeddinggemma-2 … falling back` | The app is running on bge-small. Check internet or disk space, or use Step 5 option B. |
+| ColPali shows "off" | `pip install -r backend/requirements-colpali.txt`, and check `COLPALI_ENABLED` isn't `false`. |
+| Out of memory, or the Mac is very slow | Set `COLPALI_MODEL=vidore/colSmol-500M` or `COLPALI_ENABLED=false`, and `EMBED_DIM=256`. |
+| Start over with an empty workspace | Stop the backend and delete the `data/` folder. |
 
 ## RAG techniques implemented
 

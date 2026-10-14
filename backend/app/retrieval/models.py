@@ -14,11 +14,13 @@ If EmbeddingGemma can't load, we fall back to bge automatically.
 """
 from __future__ import annotations
 
+import os
 import threading
+from pathlib import Path
 
 import numpy as np
 
-from ..config import EMBED_DIM, EMBED_MODEL, RERANK_ENABLED, RERANK_MODEL
+from ..config import EMBED_DIM, EMBED_MODEL, RERANK_ENABLED, RERANK_MODEL, ROOT
 from .device import on_device
 
 FALLBACK_EMBED_MODEL = "BAAI/bge-small-en-v1.5"
@@ -92,6 +94,15 @@ class _FastEmbedder(_Embedder):
         return _norm(np.stack(list(self.model.query_embed(texts))))
 
 
+def _local_model_dir(spec: str) -> str | None:
+    """A model given as a folder path; relative paths are resolved from the project root."""
+    p = Path(os.path.expanduser(spec))
+    for cand in ([p] if p.is_absolute() else [ROOT / p, p]):
+        if cand.is_dir():
+            return str(cand.resolve())
+    return None
+
+
 def embedder() -> _Embedder:
     return on_device(_embedder)
 
@@ -100,9 +111,10 @@ def _embedder() -> _Embedder:
     global _backend
     with _lock:
         if _backend is None:
-            if "embeddinggemma" in EMBED_MODEL.lower() or EMBED_MODEL.startswith("sentence-transformers/"):
+            local_dir = _local_model_dir(EMBED_MODEL)  # e.g. ./models/embeddinggemma-2 (offline copy)
+            if local_dir or "embeddinggemma" in EMBED_MODEL.lower() or EMBED_MODEL.startswith("sentence-transformers/"):
                 try:
-                    _backend = _GemmaEmbedder(EMBED_MODEL, EMBED_DIM)
+                    _backend = _GemmaEmbedder(local_dir or EMBED_MODEL, EMBED_DIM)
                     print(f"[embed] {EMBED_MODEL} ({_backend.dim}d)")
                 except Exception as e:
                     print(f"[embed] could not load {EMBED_MODEL} ({e}); falling back to {FALLBACK_EMBED_MODEL}")
