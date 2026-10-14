@@ -1,0 +1,9 @@
+# Optional: OCR for scanned / image-only PDF pages with DeepSeek-OCR-2 (Apple Silicon, MLX).
+# Model: mlx-community/DeepSeek-OCR-2-4bit (~2.6 GB, downloaded on first scanned page).
+mlx-vlm==0.7.8
+# imported by the model repo's bundled code during processor loading
+einops
+addict
+easydict
+matplotlib
+psutil

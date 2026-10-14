@@ -53,6 +53,8 @@ def _process(doc_id: str) -> None:
             chunks, parents, tables, info = ingest_pdf(doc_id, path, progress)
             store.update(doc_id, n_pages=info["n_pages"])
             techniques += ["Page rendering", "Layout-aware markdown", "Native table detection"]
+            if info.get("ocr_pages"):
+                techniques.append(f"DeepSeek-OCR-2 on {len(info['ocr_pages'])} scanned page(s)")
             if info["scanned_pages"]:
                 techniques.append(f"{len(info['scanned_pages'])} image-only page(s) handled visually")
         else:

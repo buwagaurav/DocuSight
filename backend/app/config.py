@@ -53,6 +53,14 @@ COLPALI_ENABLED = _bool("COLPALI_ENABLED", "auto")
 COLPALI_MODEL = os.getenv("COLPALI_MODEL", "vidore/colpali-v1.3")
 COLPALI_BATCH = int(os.getenv("COLPALI_BATCH", "2"))
 
+# --- OCR (scanned / image-only PDF pages) -------------------------------------------
+# DeepSeek-OCR-2 via MLX on Apple Silicon. "auto" = on when mlx-vlm is installed.
+OCR_ENABLED = _bool("OCR_ENABLED", "auto")
+OCR_MODEL = os.getenv("OCR_MODEL", "mlx-community/DeepSeek-OCR-2-4bit")
+OCR_MIN_CHARS = int(os.getenv("OCR_MIN_CHARS", "50"))        # pages with less extractable text get OCR'd
+OCR_MAX_TOKENS = int(os.getenv("OCR_MAX_TOKENS", "6144"))
+OCR_IDLE_SECONDS = int(os.getenv("OCR_IDLE_SECONDS", "300"))  # stop the OCR worker after this idle time
+
 # --- Ingestion -----------------------------------------------------------------
 PAGE_DPI = int(os.getenv("PAGE_DPI", "130"))
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1000"))

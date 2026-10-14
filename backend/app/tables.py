@@ -19,6 +19,10 @@ _FORBIDDEN = re.compile(
 )
 
 
+# currency symbols / ISO codes, thousands separators and spaces stripped before numeric parsing ("EUR 1,234.50")
+_CURRENCY = r"(?i)\b(?:usd|eur|gbp|inr|jpy|cny|chf|cad|aud|rs)\b\.?|[$€£₹¥,\s]"
+
+
 def sanitize(name: str, taken: set[str]) -> str:
     base = re.sub(r"[^a-zA-Z0-9]+", "_", str(name)).strip("_").lower() or "table"
     if base[0].isdigit():
@@ -62,14 +66,14 @@ def coerce_types(df: pd.DataFrame) -> pd.DataFrame:
             df[col] = pd.to_numeric(s, errors="coerce")
             continue
         txt = nonnull.astype(str).str.strip()
-        cleaned = (txt.str.replace(r"^\((.*)\)$", r"-\1", regex=True)
-                   .str.replace(r"[$€£₹¥,\s]", "", regex=True)
+        cleaned = (txt.str.replace(_CURRENCY, "", regex=True)
+                   .str.replace(r"^\((.*)\)$", r"-\1", regex=True)
                    .str.replace(r"%$", "", regex=True))
         num = pd.to_numeric(cleaned, errors="coerce")
         if num.notna().mean() >= 0.9:
             full = (s.astype(str).str.strip()
+                    .str.replace(_CURRENCY, "", regex=True)
                     .str.replace(r"^\((.*)\)$", r"-\1", regex=True)
-                    .str.replace(r"[$€£₹¥,\s]", "", regex=True)
                     .str.replace(r"%$", "", regex=True))
             df[col] = pd.to_numeric(full.replace({"": None, "None": None, "nan": None}), errors="coerce")
             continue

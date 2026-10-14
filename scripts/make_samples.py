@@ -82,10 +82,10 @@ def pdf() -> None:
         line(f"{k}: {v}")
     y += 12
     rows = [("Item", "Description", "Qty", "Unit price", "Amount"),
-            ("A-100", "Servo motor 400W", "12", "€ 310.00", "€ 3,720.00"),
-            ("A-215", "Controller board rev.C", "12", "€ 145.50", "€ 1,746.00"),
-            ("C-009", "Shielded cable 5m", "40", "€ 12.90", "€ 516.00"),
-            ("S-001", "On-site commissioning (days)", "2", "€ 950.00", "€ 1,900.00")]
+            ("A-100", "Servo motor 400W", "12", "EUR 310.00", "EUR 3,720.00"),
+            ("A-215", "Controller board rev.C", "12", "EUR 145.50", "EUR 1,746.00"),
+            ("C-009", "Shielded cable 5m", "40", "EUR 12.90", "EUR 516.00"),
+            ("S-001", "On-site commissioning (days)", "2", "EUR 950.00", "EUR 1,900.00")]
     xs = [56, 120, 330, 380, 470]
     top = y
     for row in rows:
@@ -95,7 +95,7 @@ def pdf() -> None:
     for yy in [top - 13, top + 5, y - 13]:
         page.draw_line((52, yy), (545, yy))
     y += 8
-    for k, v in [("Subtotal", "€ 7,882.00"), ("VAT 19%", "€ 1,497.58"), ("Total due", "€ 9,379.58")]:
+    for k, v in [("Subtotal", "EUR 7,882.00"), ("VAT 19%", "EUR 1,497.58"), ("Total due", "EUR 9,379.58")]:
         page.insert_text((380, y), k, fontsize=10.5, fontname="hebo" if k == "Total due" else "helv")
         page.insert_text((470, y), v, fontsize=10.5, fontname="hebo" if k == "Total due" else "helv")
         y += 16
@@ -116,7 +116,38 @@ def pdf() -> None:
     doc.save(OUT / "northwind_invoice.pdf")
 
 
+def scanned_pdf() -> None:
+    """An image-only "scan" of the invoice (no text layer): slight skew, noise, stamp,
+    handwritten-style note. Text extraction finds nothing here, so OCR is required."""
+    import io
+
+    from PIL import Image, ImageDraw, ImageFilter
+
+    src = pymupdf.open(OUT / "northwind_invoice.pdf")
+    pix = src[0].get_pixmap(matrix=pymupdf.Matrix(200 / 72, 200 / 72), alpha=False)
+    img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("L")
+    draw = ImageDraw.Draw(img)
+    w, h = img.size
+    # "PAID" stamp + handwritten-looking approval note
+    draw.rectangle((w * 0.62, h * 0.07, w * 0.9, h * 0.13), outline=90, width=6)
+    draw.text((w * 0.66, h * 0.085), "PAID 2025-11-28", fill=90, font_size=46)
+    draw.text((w * 0.1, h * 0.62), "Approved - K. Brandt, AP dept.", fill=40, font_size=44)
+    img = img.rotate(0.7, expand=False, fillcolor=255, resample=Image.BICUBIC)   # scanner skew
+    rnd = random.Random(3)
+    px = img.load()
+    for _ in range(int(w * h * 0.004)):                                           # speckle noise
+        px[rnd.randrange(w), rnd.randrange(h)] = rnd.choice((0, 60, 200))
+    img = img.filter(ImageFilter.GaussianBlur(0.6))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=70)
+    out = pymupdf.open()
+    page = out.new_page(width=src[0].rect.width, height=src[0].rect.height)
+    page.insert_image(page.rect, stream=buf.getvalue())
+    out.save(OUT / "northwind_invoice_scanned.pdf")
+
+
 if __name__ == "__main__":
     workbook()
     pdf()
+    scanned_pdf()
     print("samples written to", OUT)

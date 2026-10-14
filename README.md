@@ -63,6 +63,14 @@ pip install -r backend/requirements-colpali.txt
 
 Skip this if your machine has less than 16 GB of RAM. Everything else still works, and the app just won't search pages by how they look.
 
+**Optional: OCR for scanned PDFs (Apple Silicon Macs only).**
+
+```bash
+pip install -r backend/requirements-ocr.txt
+```
+
+This adds DeepSeek-OCR-2 (4-bit MLX, ≈2.6 GB, downloaded on the first scanned page). It runs only on pages with no text layer, such as scans and photos of documents, and makes them keyword- and semantic-searchable, with their tables queryable in SQL. Digital PDFs never use it. On other platforms it switches itself off.
+
 ### Step 3: Install the frontend (Node.js)
 
 ```bash
@@ -108,6 +116,7 @@ COLPALI_MODEL=vidore/colpali-v1.3      # ≈5.5 GB; use vidore/colSmol-500M (≈
 | `google/embeddinggemma-2` | Text embeddings (semantic search) | ≈1.4 GB | Backend starts |
 | `vidore/colpali-v1.3` + `vidore/colpaligemma-3b-pt-448-base` | ColPali visual page search | ≈5.5 GB | First PDF is uploaded |
 | `Xenova/ms-marco-MiniLM-L-6-v2` | Reranking | ≈90 MB | First search |
+| `mlx-community/DeepSeek-OCR-2-4bit` (optional) | OCR of scanned pages | ≈2.6 GB | First scanned page |
 
 None of these models are gated, so **no Hugging Face account or token is needed**. Setting `HF_TOKEN=...` in `.env` only raises download rate limits.
 
@@ -214,6 +223,7 @@ The first PDF also triggers the ColPali download and indexing, which runs in the
 | Log shows `could not load google/embeddinggemma-2 … falling back` | The app is running on bge-small. Check internet or disk space, or use Step 5 option B. |
 | ColPali shows "off" | `pip install -r backend/requirements-colpali.txt`, and check `COLPALI_ENABLED` isn't `false`. |
 | Out of memory, or the Mac is very slow | Set `COLPALI_MODEL=vidore/colSmol-500M` or `COLPALI_ENABLED=false`, and `EMBED_DIM=256`. |
+| Scanned PDF isn't searchable by text | Install `backend/requirements-ocr.txt` (Apple Silicon only). `/api/health` should show `"ocr": {"available": true}`. |
 | Start over with an empty workspace | Stop the backend and delete the `data/` folder. |
 
 ## RAG techniques implemented
@@ -229,6 +239,7 @@ These follow the techniques catalogued in the [aman.ai RAG primer](https://aman.
 | | **Contextual chunk headers** (file · page/sheet · section prepended before indexing) | `pipeline.py` |
 | | **Contextual Retrieval** (LLM-written per-chunk context, prompt-cached; opt-in) | `llm/contextual.py` |
 | | **Messy-spreadsheet normalisation**: merged cells, multiple tables per sheet, title rows, multi-row headers, form-style key/value blocks, `$1,234` / `(300)` / `12%` coercion | `ingest/excel.py` |
+| | **OCR for scanned pages: DeepSeek-OCR-2** (4-bit MLX, on-device). Runs only on pages without a text layer. Its markdown feeds BM25 and EmbeddingGemma, and its tables go to DuckDB. The LLM is told the text came from OCR, so it checks critical values against the page image. Runs in a separate worker process that stops when idle to free about 4 GB. | `ingest/ocr.py`, `ingest/ocr_worker.py` |
 | Indexing | **ColPali late-interaction visual index** (multi-vector page embeddings, MaxSim) | `retrieval/colpali.py` |
 | | **BM25** lexical index (IDs, codes, exact numbers) | `retrieval/hybrid.py` |
 | | **Dense embeddings: Google EmbeddingGemma 2**. Asymmetric prompts: queries use `task: search result \| query:` and passages use `title: <file · page · section> \| text:`, so the contextual header lands in the model's title slot. 768-d Matryoshka output (`EMBED_DIM` 512/256/128 to shrink), 8K context, text-only load. Falls back to `bge-small-en-v1.5` automatically | `retrieval/models.py` |
@@ -275,6 +286,9 @@ Provider differences are handled in `llm/client.py`:
 | `CONTEXTUAL_RETRIEVAL` | `false` | `true` = LLM chunk context with Haiku (extra cost) |
 | `EMBED_MODEL` | `google/embeddinggemma-2` | Any fastembed model also works, e.g. `BAAI/bge-small-en-v1.5`. Indexes re-embed automatically when this changes |
 | `EMBED_DIM` | `768` | Matryoshka truncation: 512 / 256 / 128 |
+| `OCR_ENABLED` | `auto` | DeepSeek-OCR-2 for scanned pages (Apple Silicon + `requirements-ocr.txt`) |
+| `OCR_MIN_CHARS` | `50` | Pages with less extractable text than this get OCR'd |
+| `OCR_IDLE_SECONDS` | `300` | Stop the OCR worker after this much idle time (frees about 4 GB) |
 | `RERANK_ENABLED` | `true` | |
 | `SEMANTIC_CACHE_THRESHOLD` | `0.97` | |
 
