@@ -1,0 +1,25 @@
+# Core API
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+python-dotenv>=1.0
+
+# LLM (Claude — vision + tool use)
+anthropic>=0.40
+
+# Parsing
+pymupdf>=1.24
+pymupdf4llm>=0.0.17
+openpyxl>=3.1
+xlrd>=2.0
+pandas>=2.2
+tabulate>=0.9
+pillow>=10.0
+
+# Retrieval
+duckdb>=1.1
+rank-bm25>=0.2.2
+fastembed>=0.4                 # bge fallback embeddings + cross-encoder reranker
+sentence-transformers>=5.1     # google/embeddinggemma-2 (default dense embeddings)
+torch>=2.3
+numpy>=1.26

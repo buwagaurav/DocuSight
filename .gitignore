@@ -1,0 +1,15 @@
+.venv/
+data/
+.testdata/
+.env
+__pycache__/
+*.pyc
+.pip-*.log
+.next-create.log
+.idea/
+.*.log
+.shots/
+*.iml
+node_modules/
+.next/
+models/

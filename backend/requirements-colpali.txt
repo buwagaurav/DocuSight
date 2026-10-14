@@ -1,0 +1,4 @@
+# Optional: ColPali visual late-interaction retrieval (recommended).
+# Runs on Apple Silicon (MPS), CUDA, or CPU (slow).
+torch>=2.3
+colpali-engine>=0.3.8
