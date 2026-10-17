@@ -1,17 +1,18 @@
 "use client";
 
-import { AlertCircle, Database, Eye, FileStack, FlaskConical, LayoutDashboard, MessageSquare, Moon, ScanEye, Sun, UploadCloud } from "lucide-react";
+import { AlertCircle, Database, Eye, FileStack, FlaskConical, LayoutDashboard, MessageSquare, Moon, ScanEye, Sun, Table2, UploadCloud } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, type Doc, type Health } from "@/lib/api";
 import ChatPanel, { type ChatHandle } from "./ChatPanel";
 import DataTab from "./DataTab";
+import ExtractionWorkspace from "./ExtractionWorkspace";
 import OverviewTab from "./OverviewTab";
 import PagesTab from "./PagesTab";
 import SearchLab from "./SearchLab";
 import Sidebar from "./Sidebar";
 import { Badge, Empty, Progress, Spinner, cn } from "./ui";
 
-type Tab = "overview" | "data" | "pages" | "lab";
+type Tab = "overview" | "data" | "pages" | "lab" | "extraction";
 type MobilePane = "docs" | "doc" | "chat";
 
 export default function AppShell() {
@@ -124,6 +125,7 @@ export default function AppShell() {
     { id: "data", label: "Tables & Data", icon: Database, badge: active?.tables.length },
     { id: "pages", label: active?.kind === "pdf" ? "Pages" : "Sheets", icon: FileStack },
     { id: "lab", label: "Retrieval Lab", icon: FlaskConical },
+    { id: "extraction", label: "Extraction", icon: Table2 },
   ];
 
   return (
@@ -209,8 +211,7 @@ export default function AppShell() {
 
         {/* workspace */}
         <main className={cn("min-h-0 min-w-0 flex-col", pane === "doc" ? "flex" : "hidden lg:flex")}>
-          {active ? (
-            <>
+          <>
               <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-line bg-panel px-3">
                 {tabs.map((t) => (
                   <button
@@ -230,7 +231,13 @@ export default function AppShell() {
                 ))}
               </div>
               <div className="min-h-0 flex-1 overflow-y-auto p-4 lg:p-6">
-                {active.status === "processing" && tab !== "lab" ? (
+                {tab === "extraction" ? (
+                  <ExtractionWorkspace />
+                ) : !active ? (
+                  <Empty icon={<UploadCloud className="h-10 w-10 text-accent" />} title="Upload a PDF or spreadsheet to begin">
+                    DocuSight parses documents and answers questions with cited sources. Choose the Extraction tab to build a project-wide structured table.
+                  </Empty>
+                ) : active.status === "processing" && tab !== "lab" ? (
                   <div className="mx-auto flex max-w-md flex-col items-center gap-4 py-20 text-center">
                     <Spinner className="h-8 w-8 text-accent" />
                     <div>
@@ -254,15 +261,7 @@ export default function AppShell() {
                   <SearchLab docs={readyDocs} colpaliAvailable={!!health?.colpali.available} onOpenPage={openPage} />
                 )}
               </div>
-            </>
-          ) : (
-            <div className="flex flex-1 items-center justify-center p-6">
-              <Empty icon={<UploadCloud className="h-10 w-10 text-accent" />} title="Upload a PDF or spreadsheet to begin">
-                DocuSight instantly extracts every key field, table and metric — then answers any question with cited sources. Invoices, contracts,
-                financial statements, scanned forms and messy multi-sheet workbooks all work.
-              </Empty>
-            </div>
-          )}
+          </>
         </main>
 
         {/* chat */}

@@ -26,8 +26,8 @@ PDF_EXT = {".pdf"}
 EXCEL_EXT = {".xlsx", ".xlsm", ".xls", ".ods", ".csv", ".tsv"}
 
 
-def submit(doc_id: str) -> None:
-    _ingest_pool.submit(_process, doc_id)
+def submit(doc_id: str, *, auto_extract: bool = True, contextual_retrieval: bool = True) -> None:
+    _ingest_pool.submit(_process, doc_id, auto_extract, contextual_retrieval)
 
 
 def submit_extraction(doc_id: str) -> None:
@@ -40,7 +40,7 @@ def submit_visual(doc_id: str) -> None:
         _visual_pool.submit(_visual, doc_id)
 
 
-def _process(doc_id: str) -> None:
+def _process(doc_id: str, auto_extract: bool = True, contextual_retrieval: bool = True) -> None:
     meta = store.docs[doc_id]
     path = store.source_path(doc_id)
 
@@ -79,7 +79,7 @@ def _process(doc_id: str) -> None:
             c.context = " · ".join(x for x in (meta.filename, loc, c.section or "") if x)
         techniques += ["Structure-aware chunking", "Contextual chunk headers", "Small-to-big parents"]
 
-        if CONTEXTUAL_RETRIEVAL:
+        if CONTEXTUAL_RETRIEVAL and contextual_retrieval:
             progress("Contextual retrieval (LLM chunk context)", 0.65)
             full = "\n\n".join(parents.values())
             n = contextualize(full, chunks, lambda f: progress("Contextual retrieval", 0.65 + 0.15 * f))
@@ -95,7 +95,10 @@ def _process(doc_id: str) -> None:
 
         store.update(doc_id, status="ready", stage="Ready", progress=1.0, n_chunks=len(chunks), techniques=techniques)
         retriever.invalidate()
-        submit_extraction(doc_id)
+        if auto_extract:
+            submit_extraction(doc_id)
+        else:
+            store.update(doc_id, extraction_status="skipped")
         submit_visual(doc_id)
     except Exception as e:
         traceback.print_exc()

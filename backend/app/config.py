@@ -46,6 +46,9 @@ RERANK_MODEL = os.getenv("RERANK_MODEL", "Xenova/ms-marco-MiniLM-L-6-v2")
 RERANK_ENABLED = _bool("RERANK_ENABLED", "true")
 CONTEXTUAL_RETRIEVAL = _bool("CONTEXTUAL_RETRIEVAL", "false")  # LLM-written chunk context (costs tokens)
 SEMANTIC_CACHE_THRESHOLD = float(os.getenv("SEMANTIC_CACHE_THRESHOLD", "0.97"))
+EXTRACTION_CLOUD_ENABLED = _bool("EXTRACTION_CLOUD_ENABLED", "false")
+EXTRACTION_PROJECTS_DIR = DATA_DIR / "extraction_projects"
+EXTRACTION_PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # --- ColPali -------------------------------------------------------------------
 # "auto" = enabled when colpali-engine + torch are importable.

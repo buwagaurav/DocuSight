@@ -86,6 +86,74 @@ export interface Health {
   rerank_model: string;
 }
 
+export interface ExtractionField {
+  id: string;
+  name: string;
+  description: string;
+  instructions: string;
+  data_type: "string" | "number" | "integer" | "boolean" | "date" | "object";
+  nullable: boolean;
+  required: boolean;
+  unit: string;
+  normalization: string;
+  allowed_values: string[];
+  multiple: boolean;
+  constraints: Record<string, unknown>;
+}
+
+export interface ExtractionCell {
+  field_id: string;
+  document_id: string;
+  value: string;
+  raw_value: string;
+  normalized_value: unknown;
+  status: "supported" | "missing" | "illegible" | "not_applicable" | "conflicting" | "unsupported";
+  evidence: { text: string; page: number | null; start_char?: number | null; end_char?: number | null; verified?: boolean | null; document_id?: string; filename?: string }[];
+  validation_issues: string[];
+  review_status: string;
+  original_model_value?: { value: string; normalized_value: unknown; status: string } | null;
+  previous_reviewed_value?: { value: string; normalized_value: unknown; corrected_at?: number } | null;
+}
+
+export interface ExtractionObservation {
+  id: string;
+  record_key: string;
+  label: string;
+  document_id: string;
+  filename: string;
+  observation_unit: string;
+  fields: Record<string, ExtractionCell>;
+}
+
+export interface ExtractionProject {
+  id: string;
+  name: string;
+  objective: string;
+  observation_unit: string;
+  documents: string[];
+  schema: { version?: number; fields: ExtractionField[]; json_schema?: Record<string, unknown> };
+  proposed_schema?: { fields: ExtractionField[] };
+  schema_version: number;
+  schema_versions: unknown[];
+  discovery_reasoning?: string;
+  observations?: ExtractionObservation[];
+  observation_count?: number;
+  status: string;
+  job: { id?: string | null; status: string; stage: string; progress: number; error?: string | null; document_done?: number; document_total?: number; document_ids?: string[] };
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ExtractionCapabilities {
+  cloud_enabled: boolean;
+  llm_available: boolean;
+  provider: string;
+  local_generation_available: boolean;
+  vision_available: boolean;
+  cloud_consent_required: boolean;
+  cost_pricing_available: boolean;
+}
+
 export interface Source {
   id: string;
   kind: "text" | "page" | "sql";
@@ -181,6 +249,53 @@ export const api = {
         trace: Record<string, unknown>;
       }>(r),
     ),
+  extractionCapabilities: () => fetch(`${API}/api/extraction/capabilities`).then((r) => j<ExtractionCapabilities>(r)),
+  extractionProjects: () => fetch(`${API}/api/extraction/projects`).then((r) => j<(ExtractionProject & { observation_count: number; field_count: number })[]>(r)),
+  extractionProject: (id: string) => fetch(`${API}/api/extraction/projects/${id}`).then((r) => j<ExtractionProject>(r)),
+  createExtractionProject: (name: string, objective: string) =>
+    fetch(`${API}/api/extraction/projects`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, objective }) }).then((r) => j<ExtractionProject>(r)),
+  patchExtractionProject: (id: string, body: Partial<Pick<ExtractionProject, "name" | "objective" | "observation_unit">>) =>
+    fetch(`${API}/api/extraction/projects/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body) }).then((r) => j<ExtractionProject>(r)),
+  uploadExtractionDocuments: (id: string, files: File[]) => {
+    const fd = new FormData();
+    files.forEach((f) => fd.append("files", f));
+    return fetch(`${API}/api/extraction/projects/${id}/documents`, { method: "POST", body: fd }).then((r) => j<Doc[]>(r));
+  },
+  extractionDocuments: (id: string) => fetch(`${API}/api/extraction/projects/${id}/documents`).then((r) => j<Doc[]>(r)),
+  discoverExtractionSchema: (id: string, body: { objective: string; observation_unit: string; cloud_consent: boolean }) =>
+    fetch(`${API}/api/extraction/projects/${id}/discover`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body) }).then((r) => j<{ observation_unit: string; reasoning: string; fields: ExtractionField[] }>(r)),
+  saveExtractionSchema: (id: string, body: { objective: string; observation_unit: string; fields: ExtractionField[] }) =>
+    fetch(`${API}/api/extraction/projects/${id}/schema`, { method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body) }).then((r) => j<ExtractionProject>(r)),
+  reuseExtractionSchema: (id: string, source_project_id: string) =>
+    fetch(`${API}/api/extraction/projects/${id}/reuse-schema`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source_project_id }) }).then((r) => j<ExtractionProject>(r)),
+  extractionResults: (id: string, options: { limit?: number; offset?: number; q?: string; sort_by?: "document" | "observation" }) => {
+    const params = new URLSearchParams({ limit: String(options.limit ?? 100), offset: String(options.offset ?? 0),
+      q: options.q ?? "", sort_by: options.sort_by ?? "document" });
+    return fetch(`${API}/api/extraction/projects/${id}/results?${params}`).then((r) =>
+      j<{ total: number; all_total: number; offset: number; limit: number; observations: ExtractionObservation[] }>(r));
+  },
+  extractionEstimate: (id: string) => fetch(`${API}/api/extraction/projects/${id}/estimate`).then((r) =>
+    j<{ ready_documents: number; pages: number; estimated_input_tokens: number; estimated_cost: number | null; note: string }>(r)),
+  startExtraction: (id: string, body: { cloud_consent: boolean; document_ids?: string[] }) =>
+    fetch(`${API}/api/extraction/projects/${id}/extract`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body) }).then((r) => j<ExtractionProject>(r)),
+  rerunExtraction: (id: string, body: { cloud_consent: boolean; document_ids?: string[]; field_ids?: string[]; observation_ids?: string[] }) =>
+    fetch(`${API}/api/extraction/projects/${id}/rerun`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body) }).then((r) => j<ExtractionProject>(r)),
+  resumeExtraction: (id: string, cloud_consent: boolean) =>
+    fetch(`${API}/api/extraction/projects/${id}/resume`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cloud_consent }) }).then((r) => j<ExtractionProject>(r)),
+  cancelExtraction: (id: string) => fetch(`${API}/api/extraction/projects/${id}/cancel`, { method: "POST" }).then((r) => j<ExtractionProject>(r)),
+  correctExtractionCell: (id: string, observationId: string, fieldId: string, body: { value: string; normalized_value: unknown; status: string }) =>
+    fetch(`${API}/api/extraction/projects/${id}/results/${observationId}/fields/${fieldId}`, { method: "PATCH",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<ExtractionCell>(r)),
+  deleteExtractionProject: (id: string) => fetch(`${API}/api/extraction/projects/${id}`, { method: "DELETE" }).then((r) => j<{ ok: boolean }>(r)),
+  extractionExportUrl: (id: string, format: "json" | "csv" | "xlsx") => `${API}/api/extraction/projects/${id}/export/${format}`,
 };
 
 /** POST /api/chat and yield server-sent events. */

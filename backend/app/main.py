@@ -23,6 +23,7 @@ from .retrieval.hybrid import retriever
 from .retrieval.models import embedder, loaded_embedding_info
 from .store import store
 from .tables import preview, run_sql
+from .extraction.api import router as extraction_router
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -33,6 +34,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="DocuSight", version="1.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS, allow_methods=["*"], allow_headers=["*"])
+app.include_router(extraction_router)
 
 MAX_UPLOAD = 200 * 1024 * 1024
 

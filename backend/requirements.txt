@@ -15,6 +15,7 @@ xlrd>=2.0
 pandas>=2.2
 tabulate>=0.9
 pillow>=10.0
+jsonschema>=4.23
 
 # Retrieval
 duckdb>=1.1

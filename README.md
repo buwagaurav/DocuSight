@@ -97,6 +97,8 @@ DEEPSEEK_API_KEY=sk-your-deepseek-key
 # ANTHROPIC_API_KEY=sk-ant-your-key
 ```
 
+For schema-guided Extraction, also set `EXTRACTION_CLOUD_ENABLED=true`. The Extraction tab still requires per-project consent before document text or scanned-page images are sent to the selected provider. Leave this false for local-only parsing and indexing; AI schema discovery and extraction will then be unavailable.
+
 Keep the model lines that match your machine:
 
 ```bash
@@ -164,6 +166,23 @@ If EmbeddingGemma fails to load for any reason, DocuSight **switches to `bge-sma
 ```
 
 This starts the backend on **:8000** and the frontend on **:3000**, and installs any missing dependencies first. Stop both with `Ctrl+C`.
+
+### Extraction: local setup and end-to-end flow
+
+The Extraction workspace is part of the existing frontend and backend. `pip install -r backend/requirements.txt` installs the only new backend dependency (`jsonschema`); `npm install` covers the frontend. No new database, vector store, embedding model, or language model is required. It reuses the configured Anthropic or DeepSeek provider and existing document/page/chunk store. Extraction processes all stored page text in bounded batches rather than relying only on top-k retrieval.
+
+1. In `.env`, choose the existing provider and API key as shown in Step 4, set `EXTRACTION_CLOUD_ENABLED=true`, and restart with `./run.sh`.
+2. Open http://localhost:3000, choose **Extraction**, and create a project with an objective.
+3. Upload one or more PDFs. Parsing, page rendering, indexing, and available OCR run locally. Wait until every PDF shows `ready`.
+4. Review the objective and suggested observation unit. Check the provider-consent box, choose **Discover schema**, review and edit fields, then save the schema. Saved schemas can be copied to another project.
+5. Choose **Start extraction**. Job progress persists to disk. Open a result cell to inspect its evidence quote and source page, correct it, or rerun that field or document.
+6. Download JSON, CSV, or Excel. JSON retains typed values, evidence, review status, and validation details. CSV serializes nested/evidence data as JSON text and adds status/evidence/validation columns. Excel has Results, Evidence, and Validation sheets.
+
+The provider and model are shown before consent. Discovery and extraction are blocked when the environment flag is false or the configured provider is unavailable. This repository has no local text-generation model, so cloud inference is required for AI schema discovery and field extraction. The app never silently switches to a cloud provider. Extraction project uploads skip the existing automatic LLM summary until the user approves project processing.
+
+For scanned PDFs, Apple Silicon Macs can install `backend/requirements-ocr.txt`; DeepSeek-OCR-2 then downloads on the first scanned page and runs locally. On other platforms, no OCR package is required by default: if OCR text is unavailable, an approved multimodal provider can inspect scanned-page images during discovery/extraction. A text-only model cannot read those images, so use local OCR where available or choose a configured vision-capable provider.
+
+Token estimates are approximate and text-only. Provider prices and image-token charges are not embedded in DocuSight, so the UI does not quote a monetary cost. Project metadata, schemas, jobs, values, and evidence are stored in `data/extraction_projects/`; PDFs and page artifacts remain in the existing `data/docs/` store. This repository has no authentication, so treat a local instance as a single-user workspace.
 
 **Or start them manually in two terminals:**
 
@@ -287,6 +306,7 @@ Provider differences are handled in `llm/client.py`:
 | `EMBED_MODEL` | `google/embeddinggemma-2` | Any fastembed model also works, e.g. `BAAI/bge-small-en-v1.5`. Indexes re-embed automatically when this changes |
 | `EMBED_DIM` | `768` | Matryoshka truncation: 512 / 256 / 128 |
 | `OCR_ENABLED` | `auto` | DeepSeek-OCR-2 for scanned pages (Apple Silicon + `requirements-ocr.txt`) |
+| `EXTRACTION_CLOUD_ENABLED` | `false` | Set `true` to enable schema discovery/extraction; each project also requires user consent |
 | `OCR_MIN_CHARS` | `50` | Pages with less extractable text than this get OCR'd |
 | `OCR_IDLE_SECONDS` | `300` | Stop the OCR worker after this much idle time (frees about 4 GB) |
 | `RERANK_ENABLED` | `true` | |
@@ -295,6 +315,8 @@ Provider differences are handled in `llm/client.py`:
 ## API
 
 `POST /api/documents` (multipart `files`) · `GET /api/documents` · `GET /api/documents/{id}` · `DELETE /api/documents/{id}` · `POST /api/documents/{id}/extract` · `GET /api/documents/{id}/pages/{n}` · `GET /api/documents/{id}/sheets/{i}` · `GET /api/documents/{id}/tables/{name}` · `POST /api/documents/{id}/sql` · `POST /api/search` · `POST /api/chat` (SSE). Interactive docs are at http://localhost:8000/docs.
+
+Schema-guided routes are under `/api/extraction`: create/list/open/delete projects, upload PDFs, discover and save versioned schemas, reuse a schema, estimate tokens, start jobs, page/filter results, correct cells, and export JSON/CSV/XLSX. Projects use the existing local document registry and add no database or queue.
 
 ## Notes
 
