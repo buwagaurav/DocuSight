@@ -13,6 +13,8 @@ from app.extraction.api import _export_csv, _export_json, _export_xlsx
 from app.extraction.projects import ExtractionProjectStore
 from app.extraction.service import (
     _cell_issues,
+    api_safe_schema,
+    extraction_response_schema,
     _merge_batch_observations,
     _normalize_model_record,
     _reconcile_cross_document_conflicts,
@@ -107,6 +109,24 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(len(rows[0]["fields"]["revenue"]["evidence"]), 2)
 
 
+class EquivalentValueTests(unittest.TestCase):
+    def test_equal_numbers_in_different_forms_are_not_conflicts(self):
+        def row(doc, value):
+            return {"id": doc, "record_key": "INV-1 A-100", "schema_version": 1, "document_id": doc, "filename": f"{doc}.pdf",
+                    "fields": {"price": {"status": "supported", "value": str(value), "raw_value": str(value),
+                                         "normalized_value": value, "review_status": "unreviewed",
+                                         "validation_issues": [], "evidence": [{"text": "310.00", "page": 1}]},
+                               "supplier": {"status": "supported", "value": "x", "raw_value": "x",
+                                            "normalized_value": "Northwind  GmbH " if doc == "a" else "Northwind GmbH",
+                                            "review_status": "unreviewed", "validation_issues": [],
+                                            "evidence": [{"text": "Northwind GmbH", "page": 1}]}}}
+        rows = [row("a", 310), row("b", 310.0)]
+        _reconcile_cross_document_conflicts(rows)
+        for r in rows:
+            self.assertEqual(r["fields"]["price"]["status"], "supported")
+            self.assertEqual(r["fields"]["supplier"]["status"], "supported")
+
+
 class PersistenceAndExportTests(unittest.TestCase):
     def test_projects_persist_and_mark_interrupted_jobs(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -136,8 +156,88 @@ class PersistenceAndExportTests(unittest.TestCase):
         self.assertIn("'" + "=1+1", csv_text)
         workbook = load_workbook(io.BytesIO(_export_xlsx(project)), data_only=False)
         self.assertEqual(workbook.sheetnames, ["Results", "Evidence", "Validation"])
-        self.assertEqual(workbook["Results"][2][6].value, "'=1+1")
-        self.assertEqual(workbook["Evidence"][2][10].value, 3)
+        self.assertEqual(workbook["Results"][1][5].value, "Revenue")
+        self.assertEqual(workbook["Results"][2][5].value, "'=1+1")
+        self.assertEqual(workbook["Evidence"][1][9].value, "Page")
+        self.assertEqual(workbook["Evidence"][2][9].value, 3)
+
+
+
+class ProviderSchemaTests(unittest.TestCase):
+    """Schemas sent to the model must avoid keywords Claude's structured outputs reject."""
+
+    def _walk(self, node, path="$"):
+        if isinstance(node, dict):
+            yield path, node
+            for key, value in node.items():
+                yield from self._walk(value, f"{path}.{key}")
+        elif isinstance(node, list):
+            for i, value in enumerate(node):
+                yield from self._walk(value, f"{path}[{i}]")
+
+    def test_extraction_schema_is_provider_safe(self):
+        fields = normalize_fields([
+            {"id": "year", "name": "Year", "data_type": "integer", "constraints": {"minimum": 1900, "maximum": 2100}},
+            {"id": "code", "name": "Code", "data_type": "string", "constraints": {"minLength": 2, "pattern": "^[A-Z]+$"}},
+            {"id": "tags", "name": "Tags", "data_type": "string", "multiple": True},
+            {"id": "contact", "name": "Contact", "data_type": "object",
+             "constraints": {"properties": {"name": {"type": "string"}, "minimum": {"type": "number"}}, "required": ["name"]}},
+        ])
+        safe = api_safe_schema(extraction_response_schema(fields))
+        forbidden = {"minimum", "maximum", "minLength", "maxLength", "minItems", "maxItems"}
+        for path, node in self._walk(safe):
+            if path.endswith(".properties"):
+                continue  # keys here are property names (a field may legitimately be called "minimum")
+            self.assertFalse(forbidden & set(node), f"unsupported keyword at {path}: {forbidden & set(node)}")
+            if node.get("type") == "object":
+                self.assertIs(node.get("additionalProperties"), False, f"open object at {path}")
+        contact = safe["properties"]["observations"]["items"]["properties"]["fields"]["properties"]["contact"]
+        nested = contact["properties"]["normalized_value"]["anyOf"][0]
+        self.assertIn("minimum", nested["properties"])  # property *named* minimum survives
+        code = safe["properties"]["observations"]["items"]["properties"]["fields"]["properties"]["code"]
+        self.assertEqual(code["properties"]["normalized_value"]["anyOf"][0]["pattern"], "^[A-Z]+$")
+
+    def test_constraints_are_still_enforced_locally(self):
+        field = normalize_fields([{"id": "year", "name": "Year", "data_type": "integer",
+                                   "constraints": {"minimum": 1900}}])[0]
+        issues = _cell_issues(field, {"normalized_value": 1200, "status": "supported", "evidence": [{"page": 1}]})
+        self.assertTrue(any("validation failed" in i.lower() for i in issues))
+
+
+class DocumentIsolationTests(unittest.TestCase):
+    """Extraction-project uploads must stay out of the main RAG workspace."""
+
+    def setUp(self):
+        self.ids = {"main": "iso-main-doc", "proj": "iso-project-doc"}
+        store.docs[self.ids["main"]] = DocMeta(id=self.ids["main"], filename="main.pdf", kind="pdf", status="ready")
+        store.docs[self.ids["proj"]] = DocMeta(id=self.ids["proj"], filename="project.pdf", kind="pdf",
+                                               status="ready", project_id="some-project")
+
+    def tearDown(self):
+        for doc_id in self.ids.values():
+            store.docs.pop(doc_id, None)
+
+    def test_main_ids_exclude_project_documents(self):
+        self.assertIn(self.ids["main"], store.main_ids())
+        self.assertNotIn(self.ids["proj"], store.main_ids())
+        self.assertEqual(store.main_ids([self.ids["proj"]]), [])
+
+    def test_main_api_hides_project_documents(self):
+        from fastapi.testclient import TestClient
+        from app.main import app
+
+        client = TestClient(app)
+        listed = {d["id"] for d in client.get("/api/documents").json()}
+        self.assertIn(self.ids["main"], listed)
+        self.assertNotIn(self.ids["proj"], listed)
+        self.assertEqual(client.post(f"/api/documents/{self.ids['proj']}/extract").status_code, 409)
+        self.assertEqual(client.delete(f"/api/documents/{self.ids['proj']}").status_code, 409)
+        # a chat that names only project documents must not fall back to "all documents"
+        body = client.post("/api/chat", json={"question": "hi", "doc_ids": [self.ids["proj"]]}).text
+        self.assertIn('"type": "error"', body)
+        self.assertIn("No documents selected", body)
+        search = client.post("/api/search", json={"query": "x", "doc_ids": [self.ids["proj"]]}).json()
+        self.assertEqual(search["hits"], [])
 
 
 if __name__ == "__main__":

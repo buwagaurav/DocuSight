@@ -62,7 +62,8 @@ def health() -> dict[str, Any]:
 
 @app.get("/api/documents")
 def list_documents() -> list[dict[str, Any]]:
-    return [asdict(m) for m in sorted(store.docs.values(), key=lambda m: m.created_at, reverse=True)]
+    docs = [store.docs[i] for i in store.main_ids()]
+    return [asdict(m) for m in sorted(docs, key=lambda m: m.created_at, reverse=True)]
 
 
 @app.post("/api/documents")
@@ -95,7 +96,8 @@ def get_document(doc_id: str) -> dict[str, Any]:
 
 @app.delete("/api/documents/{doc_id}")
 def delete_document(doc_id: str) -> dict[str, bool]:
-    _doc(doc_id)
+    if _doc(doc_id).project_id:
+        raise HTTPException(409, "This document belongs to an extraction project; delete it from the Extraction tab")
     store.delete(doc_id)
     colpali.forget(doc_id)
     retriever.invalidate()
@@ -105,6 +107,8 @@ def delete_document(doc_id: str) -> dict[str, bool]:
 
 @app.post("/api/documents/{doc_id}/extract")
 def re_extract(doc_id: str) -> dict[str, bool]:
+    if _doc(doc_id).project_id:
+        raise HTTPException(409, "This document belongs to an extraction project; use the Extraction tab")
     if _doc(doc_id).status != "ready":
         raise HTTPException(409, "Document is not ready yet")
     store.update(doc_id, extraction_status="pending")
@@ -183,7 +187,10 @@ class SearchIn(BaseModel):
 @app.post("/api/search")
 def search(body: SearchIn) -> dict[str, Any]:
     """Retrieval playground: raw hybrid results with per-signal ranks."""
-    ids = store.ready_ids(body.doc_ids or None)
+    # explicit filter: ready_ids([]) would mean "all documents", project uploads included
+    ids = [i for i in store.main_ids(body.doc_ids or None) if store.docs[i].status == "ready"]
+    if not ids:
+        return {"hits": [], "pages": [], "trace": {"queries": [body.query], "candidates": 0}}
     res = retriever.search([body.query], ids, k=min(body.k, 20), use_colpali=body.colpali, use_rerank=body.rerank)
     return {
         "hits": [{**asdict(h.chunk), "score": h.score, "signals": h.signals,
@@ -202,9 +209,14 @@ class ChatIn(BaseModel):
 
 @app.post("/api/chat")
 def chat(body: ChatIn):
+    doc_ids = store.main_ids(body.doc_ids or None)
+
     def events():
+        if not doc_ids:  # never fall through to "all documents" (which would include extraction projects)
+            yield f"data: {json.dumps({'type': 'error', 'message': 'No documents selected. Upload a PDF or Excel file first.'})}\n\n"
+            return
         try:
-            for ev in run_agent(body.question, body.history, body.doc_ids or list(store.docs), body.options):
+            for ev in run_agent(body.question, body.history, doc_ids, body.options):
                 yield f"data: {json.dumps(ev, default=str)}\n\n"
         except Exception as e:  # never break the stream silently
             yield f"data: {json.dumps({'type': 'error', 'message': f'{type(e).__name__}: {e}'})}\n\n"

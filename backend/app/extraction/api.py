@@ -18,6 +18,9 @@ from openpyxl.styles import Font, PatternFill
 from pydantic import BaseModel, Field
 
 from .. import pipeline
+from ..ingest.pdf import _MUPDF_LOCK
+from ..retrieval.colpali import colpali
+from ..retrieval.hybrid import retriever
 from ..config import EXTRACTION_CLOUD_ENABLED
 from ..llm.client import llm_available, model_label
 from ..store import store
@@ -36,6 +39,18 @@ from .service import (
 )
 
 router = APIRouter(prefix="/api/extraction", tags=["schema-guided extraction"])
+
+
+def _tag_project_documents() -> None:
+    """Projects created before documents carried a project_id: tag their uploads on startup."""
+    for project in projects.list():
+        for doc_id in project.get("documents", []):
+            meta = store.docs.get(doc_id)
+            if meta and meta.project_id is None:
+                store.update(doc_id, project_id=project["id"])
+
+
+_tag_project_documents()
 MAX_UPLOAD = 200 * 1024 * 1024
 
 
@@ -152,6 +167,12 @@ def delete_project(project_id: str) -> dict[str, bool]:
     if project.get("job", {}).get("status") in {"queued", "running"}:
         raise HTTPException(409, "Wait for the current extraction job to finish before deleting the project")
     projects.delete(project_id)
+    for doc_id in project.get("documents", []):  # project uploads are project-scoped: remove them too
+        meta = store.docs.get(doc_id)
+        if meta and meta.project_id == project_id:
+            store.delete(doc_id)
+            colpali.forget(doc_id)
+    retriever.invalidate()
     return {"ok": True}
 
 
@@ -169,16 +190,18 @@ async def upload_project_documents(project_id: str, files: list[UploadFile] = Fi
         if len(data) > MAX_UPLOAD:
             raise HTTPException(413, f"{filename} is larger than 200 MB")
         try:
-            pdf = pymupdf.open(stream=data, filetype="pdf")
-            if pdf.page_count < 1:
+            with _MUPDF_LOCK:  # MuPDF is not thread-safe; ingestion may be parsing another PDF right now
+                pdf = pymupdf.open(stream=data, filetype="pdf")
+                pages = pdf.page_count
+                pdf.close()
+            if pages < 1:
                 raise ValueError("PDF contains no pages")
-            pdf.close()
         except Exception as exc:
             raise HTTPException(400, f"{filename} is not a readable PDF: {exc}") from exc
         pending.append((filename, data))
     created = []
     for filename, data in pending:
-        meta = store.create(filename, "pdf", data)
+        meta = store.create(filename, "pdf", data, project_id=project_id)
         created.append(asdict(meta))
     if created:
         ids = [doc["id"] for doc in created]

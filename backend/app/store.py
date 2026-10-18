@@ -64,6 +64,10 @@ class DocMeta:
     extraction_status: str = "pending"  # pending | running | ready | error | skipped
     extraction: dict[str, Any] | None = None
     techniques: list[str] = field(default_factory=list)
+    # Set for documents uploaded into a schema-guided extraction project. Those stay out of the
+    # main app (document list, search, chat, auto-extraction) so nothing reaches the LLM
+    # without that project's consent step.
+    project_id: str | None = None
 
 
 class Store:
@@ -93,12 +97,12 @@ class Store:
         return self.dir(doc_id) / f"source{Path(meta.filename).suffix.lower()}"
 
     # ---- lifecycle -------------------------------------------------------
-    def create(self, filename: str, kind: str, data: bytes) -> DocMeta:
+    def create(self, filename: str, kind: str, data: bytes, project_id: str | None = None) -> DocMeta:
         doc_id = uuid.uuid4().hex[:12]
         d = self.dir(doc_id)
         d.mkdir(parents=True)
         (d / f"source{Path(filename).suffix.lower()}").write_bytes(data)
-        meta = DocMeta(id=doc_id, filename=filename, kind=kind)
+        meta = DocMeta(id=doc_id, filename=filename, kind=kind, project_id=project_id)
         with self._lock:
             self.docs[doc_id] = meta
             self.chunks[doc_id] = []
@@ -142,6 +146,12 @@ class Store:
         with self._lock:
             ids = doc_ids or list(self.docs)
             return [i for i in ids if i in self.docs and self.docs[i].status == "ready"]
+
+    def main_ids(self, doc_ids: list[str] | None = None) -> list[str]:
+        """Documents belonging to the main RAG workspace (excludes extraction-project uploads)."""
+        with self._lock:
+            ids = doc_ids or list(self.docs)
+            return [i for i in ids if i in self.docs and self.docs[i].project_id is None]
 
     def parent_text(self, chunk: Chunk) -> str:
         if chunk.parent_id:

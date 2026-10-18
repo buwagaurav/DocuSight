@@ -331,7 +331,7 @@ def run_agent(question: str, history: list[dict[str, str]], doc_ids: list[str], 
         yield {"type": "error", "message": f"No API key for {model_label()}. Add it to the .env file in the project root "
                                            "and restart the backend. (Extraction, tables, search and SQL work without it.)"}
         return
-    doc_ids = store.ready_ids(doc_ids)
+    doc_ids = store.ready_ids(doc_ids) if doc_ids else []  # empty must not mean "all documents"
     if not doc_ids:
         yield {"type": "error", "message": "No ready documents selected. Upload a PDF or Excel file first."}
         return
