@@ -14,6 +14,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 from ..config import EXTRACTION_CLOUD_ENABLED, LLM_MODEL, LLM_PROVIDER, OCR_MIN_CHARS
 from ..llm.client import effort, image_block, llm_available, messages_api, model_label, provider_kwargs, response_text
 from ..store import store
+from .coordinates import PDFCoordinateLocator
 from .projects import projects
 
 _pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="schema-extract")
@@ -370,7 +371,8 @@ def _record_identity(record: dict[str, Any]) -> str:
     return str(record.get("record_key") or record.get("record_label") or "").strip().casefold()
 
 
-def _normalize_model_record(raw: dict[str, Any], document_id: str, fields: list[dict[str, Any]], selected: set[str] | None) -> dict[str, Any]:
+def _normalize_model_record(raw: dict[str, Any], document_id: str, fields: list[dict[str, Any]], selected: set[str] | None,
+                           coordinate_locator: PDFCoordinateLocator | None = None) -> dict[str, Any]:
     label = str(raw.get("record_label") or raw.get("record_key") or "Unlabeled record").strip()
     cells: dict[str, Any] = {}
     raw_fields = raw.get("fields", {}) if isinstance(raw.get("fields"), dict) else {}
@@ -412,8 +414,13 @@ def _normalize_model_record(raw: dict[str, Any], document_id: str, fields: list[
                     start_char, end_char = found, found + len(quote)
             elif page and page > store.docs[document_id].n_pages:
                 verified = False
+            coordinates = coordinate_locator.locate(page, quote) if coordinate_locator else {
+                "coordinates": [], "coordinate_status": "unavailable", "coordinate_source": None}
             cell["evidence"].append({"text": quote, "page": page, "start_char": start_char,
                                      "end_char": end_char, "verified": verified,
+                                     "extraction_method": "llm_quote_with_native_pdf_validation",
+                                     "confidence": None,
+                                     **coordinates,
                                      "document_id": document_id, "filename": store.docs[document_id].filename})
         if cell["status"] in {"missing", "not_applicable", "illegible", "conflicting"}:
             cell["normalized_value"] = None
@@ -539,32 +546,33 @@ def _extract_document(project: dict[str, Any], doc_id: str, fields: list[dict[st
     batches = _page_batches(doc_id)
     schema = extraction_response_schema(fields)
     rows: list[dict[str, Any]] = []
-    for index, batch in enumerate(batches):
-        if cancel_event.is_set():
-            raise JobCancelled("Extraction was cancelled after the current page batch.")
-        image_pages = [p["page"] for p in batch if p["image"] and store.page_path(doc_id, p["page"]).exists()]
-        prompt = _batch_prompt(project, doc_id, batch, fields, image_pages)
-        prompt.append({"type": "text", "text": "Use attached page images when OCR text is absent or ambiguous."})
-        response = _llm_json(prompt, schema, max_tokens=16000)
-        if cancel_event.is_set():
-            raise JobCancelled("Extraction was cancelled after the current model call.")
-        output = response.get("observations", [])
-        incoming = []
-        for raw in output if isinstance(output, list) else []:
-            if not isinstance(raw, dict):
-                continue
-            row = _normalize_model_record(raw, doc_id, fields, selected_field_ids)
-            row["observation_unit"] = project.get("observation_unit", "")
-            row["schema_version"] = project.get("schema_version", 0)
-            if selected_observation_ids:
-                match = next((old for old in project.get("observations", []) if old.get("id") in selected_observation_ids
-                              and old.get("document_id") == doc_id and _record_identity(old) == _record_identity(row)), None)
-                if match is None:
+    with PDFCoordinateLocator(doc_id) as coordinate_locator:
+        for index, batch in enumerate(batches):
+            if cancel_event.is_set():
+                raise JobCancelled("Extraction was cancelled after the current page batch.")
+            image_pages = [p["page"] for p in batch if p["image"] and store.page_path(doc_id, p["page"]).exists()]
+            prompt = _batch_prompt(project, doc_id, batch, fields, image_pages)
+            prompt.append({"type": "text", "text": "Use attached page images when OCR text is absent or ambiguous."})
+            response = _llm_json(prompt, schema, max_tokens=16000)
+            if cancel_event.is_set():
+                raise JobCancelled("Extraction was cancelled after the current model call.")
+            output = response.get("observations", [])
+            incoming = []
+            for raw in output if isinstance(output, list) else []:
+                if not isinstance(raw, dict):
                     continue
-                row["id"] = match["id"]
-            incoming.append(row)
-        rows = _merge_batch_observations(rows, incoming)
-        progress(index + 1, len(batches), store.docs[doc_id].filename)
+                row = _normalize_model_record(raw, doc_id, fields, selected_field_ids, coordinate_locator)
+                row["observation_unit"] = project.get("observation_unit", "")
+                row["schema_version"] = project.get("schema_version", 0)
+                if selected_observation_ids:
+                    match = next((old for old in project.get("observations", []) if old.get("id") in selected_observation_ids
+                                  and old.get("document_id") == doc_id and _record_identity(old) == _record_identity(row)), None)
+                    if match is None:
+                        continue
+                    row["id"] = match["id"]
+                incoming.append(row)
+            rows = _merge_batch_observations(rows, incoming)
+            progress(index + 1, len(batches), store.docs[doc_id].filename)
     return rows
 
 

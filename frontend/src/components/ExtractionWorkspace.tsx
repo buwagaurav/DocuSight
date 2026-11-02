@@ -60,6 +60,10 @@ export default function ExtractionWorkspace() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [activeCell, setActiveCell] = useState<ActiveCell | null>(null);
+  const [activeEvidenceIndex, setActiveEvidenceIndex] = useState(0);
+  const [editedBox, setEditedBox] = useState<{ key: string; value: { x: number; y: number; width: number; height: number } }>({
+    key: "", value: { x: 0, y: 0, width: 0, height: 0 },
+  });
   const [editValue, setEditValue] = useState("");
   const [editNormalized, setEditNormalized] = useState("");
   const [filter, setFilter] = useState("");
@@ -141,10 +145,17 @@ export default function ExtractionWorkspace() {
     [observations, activeCell]);
   const selectedField = useMemo(() => fields.find((field) => field.id === activeCell?.fieldId) ?? null, [fields, activeCell]);
   const selectedCell = selectedRow && activeCell ? selectedRow.fields[activeCell.fieldId] : null;
+  const activeEvidence = selectedCell?.evidence[activeEvidenceIndex] ?? selectedCell?.evidence[0] ?? null;
+  const evidenceKey = `${selectedRow?.id ?? ""}-${activeCell?.fieldId ?? ""}-${activeEvidenceIndex}`;
+  const savedBox = activeEvidence?.coordinates?.[0];
+  const evidenceBox = editedBox.key === evidenceKey ? editedBox.value :
+    savedBox ? { x: savedBox.x, y: savedBox.y, width: savedBox.width, height: savedBox.height } :
+      { x: 0, y: 0, width: 0, height: 0 };
 
   const openCell = (row: ExtractionObservation, field: ExtractionField) => {
     const cell = row.fields[field.id];
     setActiveCell({ observationId: row.id, fieldId: field.id });
+    setActiveEvidenceIndex(0);
     setEditValue(cell?.value ?? "");
     setEditNormalized(display(cell?.normalized_value) === "—" ? "" : display(cell?.normalized_value));
   };
@@ -503,9 +514,11 @@ export default function ExtractionWorkspace() {
                   <div className="space-y-3">
                     <div><div className="text-[11px] font-semibold uppercase tracking-wide text-muted">Evidence review</div><h3 className="mt-1 font-semibold text-ink">{selectedField.name}</h3><p className="text-xs text-ink-2">{selectedRow.label} · {selectedRow.filename}</p></div>
                     <div className="flex flex-wrap items-center gap-1.5"><Badge tone={statusTone(selectedCell.status)}>{selectedCell.status}</Badge><Badge>{selectedCell.review_status}</Badge></div>
-                    {selectedCell.evidence.length === 0 ? <p className="rounded-md bg-warn-soft p-2 text-xs text-warn">No supporting evidence was returned. Review this value before using it.</p> : selectedCell.evidence.map((evidence, index) => <div key={`${evidence.page}-${index}`} className="rounded-md border border-line bg-panel p-2.5">
+                    {selectedCell.evidence.length === 0 ? <p className="rounded-md bg-warn-soft p-2 text-xs text-warn">No supporting evidence was returned. Review this value before using it.</p> : selectedCell.evidence.map((evidence, index) => <div key={`${evidence.page}-${index}`} className={cn("rounded-md border bg-panel p-2.5", index === activeEvidenceIndex ? "border-accent ring-1 ring-accent/40" : "border-line")}>
                       <div className="mb-1 flex items-center justify-between gap-2 text-[11px] text-muted"><span className="truncate">{evidence.filename ?? selectedRow.filename}</span><span className="shrink-0">{evidence.page ? `Page ${evidence.page}` : "Page not identified"}</span></div>
                       <blockquote className="border-l-2 border-accent pl-2 text-xs leading-relaxed text-ink">{evidence.text || "No quote supplied"}</blockquote>
+                      <button className="mt-2 text-xs font-medium text-accent underline" onClick={() => setActiveEvidenceIndex(index)}>Show this source location</button>
+                      {evidence.coordinate_status && <span className="ml-2 text-[10px] text-muted">{evidence.coordinate_status.replaceAll("_", " ")}</span>}
                       {evidence.page && <a className="mt-2 inline-flex text-xs font-medium text-accent underline" href={`${api.fileUrl(evidence.document_id ?? selectedRow.document_id)}#page=${evidence.page}`} target="_blank" rel="noreferrer">Open original PDF · page {evidence.page}</a>}
                     </div>)}
                     {selectedCell.validation_issues.length > 0 && <ul className="list-disc space-y-1 pl-4 text-xs text-warn">{selectedCell.validation_issues.map((issue, i) => <li key={i}>{issue}</li>)}</ul>}
@@ -514,9 +527,29 @@ export default function ExtractionWorkspace() {
                     <label className="block text-xs font-medium text-ink-2">Reviewed value<input className="mt-1 w-full rounded-md border border-line bg-panel px-2.5 py-2 text-sm text-ink" value={editValue} onChange={(e) => setEditValue(e.target.value)} /></label>
                     <label className="block text-xs font-medium text-ink-2">Normalized value {selectedField.multiple ? "(JSON array)" : `(${selectedField.data_type})`}<input className="mt-1 w-full rounded-md border border-line bg-panel px-2.5 py-2 text-sm text-ink" value={editNormalized} onChange={(e) => setEditNormalized(e.target.value)} placeholder={selectedField.multiple ? '["value"]' : selectedField.data_type} /></label>
                     <Button variant="primary" size="sm" disabled={busy} onClick={correctCell}><Save className="h-3.5 w-3.5" /> Save correction</Button>
-                    {selectedCell.evidence[0]?.page && <div className="overflow-hidden rounded-md border border-line bg-panel-2">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img className="max-h-80 w-full object-contain" src={api.pageUrl(selectedCell.evidence[0].document_id ?? selectedRow.document_id, selectedCell.evidence[0].page!)} alt={`Source page ${selectedCell.evidence[0].page}`} />
+                    {activeEvidence?.page && <div className="overflow-hidden rounded-md border border-line bg-panel-2">
+                      <div className="border-b border-line px-2.5 py-1.5 text-[11px] text-ink-2">Source page {activeEvidence.page} · highlighted rectangles mark the quoted text</div>
+                      <div className="relative w-full">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img className="block h-auto w-full" src={api.pageUrl(activeEvidence.document_id ?? selectedRow.document_id, activeEvidence.page)} alt={`Source page ${activeEvidence.page}`} />
+                        {activeEvidence.coordinates?.length || evidenceBox.width > 0 ? <svg aria-label="Evidence location highlight" className="pointer-events-none absolute inset-0 h-full w-full" viewBox="0 0 1 1" preserveAspectRatio="none">
+                          {activeEvidence.coordinates?.map((rect, i) => <rect key={i} x={i === 0 ? evidenceBox.x : rect.x} y={i === 0 ? evidenceBox.y : rect.y} width={i === 0 ? evidenceBox.width : rect.width} height={i === 0 ? evidenceBox.height : rect.height} fill="rgba(250, 204, 21, 0.32)" stroke="#dc2626" strokeWidth="0.0025" />)}
+                          {!activeEvidence.coordinates?.length && evidenceBox.width > 0 && <rect x={evidenceBox.x} y={evidenceBox.y} width={evidenceBox.width} height={evidenceBox.height} fill="rgba(250, 204, 21, 0.32)" stroke="#dc2626" strokeWidth="0.0025" />}
+                        </svg> : null}
+                      </div>
+                      {!activeEvidence.coordinates?.length && <div className="p-2.5 text-xs text-muted">No reliable text-layer match was found. Current OCR provides page text but not word boxes; enter a normalized box below to verify the location manually.</div>}
+                    </div>}
+                    {activeEvidence?.page && <div className="space-y-2 rounded-md border border-line p-2.5">
+                      <div className="text-xs font-medium text-ink-2">Evidence coordinates · normalized, top-left origin</div>
+                      <div className="grid grid-cols-4 gap-1.5">{(["x", "y", "width", "height"] as const).map((key) => <label key={key} className="text-[10px] text-muted">{key}<input type="number" min="0" max="1" step="0.001" className="mt-0.5 w-full rounded border border-line bg-panel px-1.5 py-1 text-xs text-ink" value={evidenceBox[key]} onChange={(e) => setEditedBox({ key: evidenceKey, value: { ...evidenceBox, [key]: Number(e.target.value) } })} /></label>)}</div>
+                      <Button size="sm" disabled={busy || evidenceBox.width <= 0 || evidenceBox.height <= 0 || evidenceBox.x + evidenceBox.width > 1 || evidenceBox.y + evidenceBox.height > 1} onClick={async () => {
+                        if (!project || !selectedRow || !selectedField) return;
+                        setBusy(true); setError(null);
+                        try { await api.correctEvidenceCoordinates(project.id, selectedRow.id, selectedField.id, activeEvidenceIndex, [evidenceBox]); await refreshCurrent(); setNotice("Evidence box saved as human verified."); }
+                        catch (e) { setError((e as Error).message); }
+                        finally { setBusy(false); }
+                      }}>Save verified box</Button>
+                      {project && selectedRow && selectedField && activeEvidence.coordinates?.length ? <a className="ml-2 text-xs font-medium text-accent underline" href={api.annotatedPdfUrl(project.id, selectedRow.id, selectedField.id)} target="_blank" rel="noreferrer">Open annotated original PDF</a> : null}
                     </div>}
                     <div className="flex flex-wrap gap-2 border-t border-line pt-3">
                       <Button size="sm" disabled={busy || jobRunning || !cloudConsent} onClick={() => rerun({ observation_ids: [selectedRow.id], field_ids: [selectedField.id] })}><RefreshCw className="h-3.5 w-3.5" /> Rerun this field</Button>

@@ -33,7 +33,7 @@ The first start downloads the AI models automatically, so you **don't need Embed
 | Node.js | 20.9+ | 22 or newer |
 | RAM | 8 GB (ColPali off) | 16 GB (everything on) |
 | Free disk | 3 GB (ColPali off) | 10 GB (everything on) |
-| API key | — | DeepSeek **or** Anthropic (for AI extraction and chat) |
+| API key | — | Gemini, DeepSeek, or Anthropic (for AI extraction and chat) |
 
 Without an API key, parsing, tables, SQL, search and a basic extraction still work. Only the AI summary, field extraction and chat need a key.
 
@@ -88,11 +88,15 @@ cp .env.example .env
 Open `.env` and set **one** LLM provider:
 
 ```bash
-# Option A: DeepSeek (low cost, reads page images)
+# Option A: Gemini (Google AI Studio)
+LLM_MODEL=gemini:gemini-3.8-flash
+GEMINI_API_KEY=your-gemini-api-key
+
+# Option B: DeepSeek (reads page images)
 LLM_MODEL=deepseek:deepseek-flash
 DEEPSEEK_API_KEY=sk-your-deepseek-key
 
-# Option B: Claude
+# Option C: Claude
 # LLM_MODEL=anthropic:claude-opus-5-5
 # ANTHROPIC_API_KEY=sk-ant-your-key
 ```

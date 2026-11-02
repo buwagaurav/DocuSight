@@ -4,6 +4,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import math
 import re
 import time
 from dataclasses import asdict
@@ -11,7 +12,7 @@ from typing import Any
 
 import pymupdf
 from fastapi import APIRouter, File, HTTPException, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 from jsonschema import Draft202012Validator
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
@@ -22,6 +23,7 @@ from ..config import EXTRACTION_CLOUD_ENABLED
 from ..llm.client import llm_available, model_label
 from ..store import store
 from .projects import projects
+from .rendering import render_annotated_pdf
 from .service import (
     discover_schema,
     estimate_project,
@@ -81,6 +83,10 @@ class CellCorrection(BaseModel):
     value: str
     normalized_value: Any = None
     status: str = "supported"
+
+
+class EvidenceCorrection(BaseModel):
+    coordinates: list[dict[str, float]]
 
 
 def _project(project_id: str) -> dict[str, Any]:
@@ -375,6 +381,9 @@ def correct_cell(project_id: str, observation_id: str, field_id: str, body: Cell
         if cell.get("original_model_value") is None:
             cell["original_model_value"] = {"value": cell.get("value"), "normalized_value": cell.get("normalized_value"),
                                             "status": cell.get("status")}
+        cell.setdefault("review_history", []).append({"value": cell.get("value"),
+            "normalized_value": cell.get("normalized_value"), "status": cell.get("status"),
+            "review_status": cell.get("review_status"), "recorded_at": time.time(), "action": "value_correction"})
         cell.update({"value": body.value, "raw_value": body.value, "normalized_value": body.normalized_value,
                      "status": body.status, "review_status": "corrected", "corrected_at": time.time()})
         cell["validation_issues"] = []
@@ -393,6 +402,75 @@ def correct_cell(project_id: str, observation_id: str, field_id: str, body: Cell
     if updated is None:
         raise HTTPException(404, "Extraction project not found")
     return result
+
+
+@router.patch("/projects/{project_id}/results/{observation_id}/fields/{field_id}/evidence/{evidence_index}/coordinates")
+def correct_evidence_coordinates(project_id: str, observation_id: str, field_id: str,
+                                 evidence_index: int, body: EvidenceCorrection) -> dict[str, Any]:
+    project = _project(project_id)
+    _ensure_idle(project)
+    if not body.coordinates:
+        raise HTTPException(400, "At least one bounding box is required")
+    for rect in body.coordinates:
+        if not {"x", "y", "width", "height"}.issubset(rect):
+            raise HTTPException(400, "Each box requires normalized x, y, width, and height")
+        x, y, width, height = (rect.get(k) for k in ("x", "y", "width", "height"))
+        if any(not math.isfinite(v) or not 0 <= v <= 1 for v in (x, y, width, height)) or width <= 0 or height <= 0 or x + width > 1 or y + height > 1:
+            raise HTTPException(400, "Bounding boxes must be positive and inside normalized page bounds")
+    result: dict[str, Any] = {}
+    def mutate(p):
+        row = next((r for r in p.get("observations", []) if r["id"] == observation_id), None)
+        if row is None:
+            raise HTTPException(404, "Observation not found")
+        cell = row.get("fields", {}).get(field_id)
+        if cell is None:
+            raise HTTPException(404, "Field result not found")
+        evidence = cell.get("evidence", [])
+        if evidence_index < 0 or evidence_index >= len(evidence):
+            raise HTTPException(404, "Evidence item not found")
+        source = evidence[evidence_index]
+        if not source.get("page") or source.get("document_id") not in store.docs:
+            raise HTTPException(409, "Evidence has no valid source PDF page")
+        meta = store.docs[source["document_id"]]
+        pdf = pymupdf.open(str(store.source_path(meta.id)))
+        try:
+            if source["page"] > pdf.page_count:
+                raise HTTPException(409, "Evidence page is missing from the original PDF")
+            page = pdf[source["page"] - 1]
+            dimensions = (page.rect.width, page.rect.height, page.rotation, list(page.cropbox), list(page.mediabox))
+        finally:
+            pdf.close()
+        source.setdefault("review_history", []).append({"coordinates": source.get("coordinates", []),
+            "coordinate_status": source.get("coordinate_status"), "recorded_at": time.time()})
+        source["coordinates"] = [{**rect, "page_width": dimensions[0], "page_height": dimensions[1],
+            "page_rotation": dimensions[2], "crop_box": dimensions[3], "media_box": dimensions[4],
+            "coordinate_origin": "top_left", "coordinate_system": "normalized_visible_rotated_page"}
+            for rect in body.coordinates]
+        source["coordinate_status"] = "HUMAN_VERIFIED"
+        source["coordinate_source"] = "human"
+        source["localization_method"] = "HUMAN_VERIFIED"
+        source["localization_validation"] = {"valid": True, "bounds_valid": True, "verified_by_user": True}
+        source["corrected_at"] = time.time()
+        result.update(source)
+    updated = projects.update(project_id, mutate)
+    if updated is None:
+        raise HTTPException(404, "Extraction project not found")
+    return result
+
+
+@router.get("/projects/{project_id}/rendered.pdf")
+def annotated_pdf(project_id: str, observation_id: str | None = None,
+                  field_id: str | None = None, page: int | None = None):
+    project = _project(project_id)
+    if page is not None and page < 1:
+        raise HTTPException(400, "Page numbers are 1-based")
+    try:
+        output = render_annotated_pdf(project, observation_id=observation_id, field_id=field_id, page_number=page)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return FileResponse(output, media_type="application/pdf", filename=f"{project.get('name', 'extraction')}-evidence.pdf")
 
 
 def _json_value(value: Any) -> str:
@@ -466,7 +544,7 @@ def _export_xlsx(project: dict[str, Any]) -> bytes:
         results_sheet.append([_spreadsheet_safe(value) for value in values])
 
     evidence = workbook.create_sheet("Evidence")
-    evidence.append([_spreadsheet_safe(value) for value in ["Observation ID", "Observation", "Observation document", "Evidence document ID", "Evidence filename", "Field", "Value", "Status", "Evidence text", "Page", "Start", "End", "Review"]])
+    evidence.append([_spreadsheet_safe(value) for value in ["Observation ID", "Observation", "Observation document", "Evidence document ID", "Evidence filename", "Field", "Value", "Status", "Evidence text", "Page", "Start", "End", "Coordinates", "Coordinate status", "Review"]])
     issues = workbook.create_sheet("Validation")
     issues.append([_spreadsheet_safe(value) for value in ["Observation ID", "Observation", "Document", "Field", "Issue", "Review"]])
     for row in project.get("observations", []):
@@ -476,7 +554,9 @@ def _export_xlsx(project: dict[str, Any]) -> bytes:
                 evidence.append([_spreadsheet_safe(v) for v in [row.get("id"), row.get("label"), row.get("filename"),
                                  source.get("document_id", row.get("document_id")), source.get("filename", row.get("filename")),
                                  field["name"], cell.get("value"), cell.get("status"), source.get("text"), source.get("page"),
-                                 source.get("start_char"), source.get("end_char"), cell.get("review_status")]])
+                                 source.get("start_char"), source.get("end_char"),
+                                 json.dumps(source.get("coordinates", []), ensure_ascii=False), source.get("coordinate_status"),
+                                 cell.get("review_status")]])
             for issue in cell.get("validation_issues", []):
                 issues.append([_spreadsheet_safe(v) for v in [row.get("id"), row.get("label"), row.get("filename"), field["name"], issue, cell.get("review_status")]])
     for sheet in workbook.worksheets:

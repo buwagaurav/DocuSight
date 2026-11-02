@@ -136,8 +136,8 @@ class PersistenceAndExportTests(unittest.TestCase):
         self.assertIn("'" + "=1+1", csv_text)
         workbook = load_workbook(io.BytesIO(_export_xlsx(project)), data_only=False)
         self.assertEqual(workbook.sheetnames, ["Results", "Evidence", "Validation"])
-        self.assertEqual(workbook["Results"][2][6].value, "'=1+1")
-        self.assertEqual(workbook["Evidence"][2][10].value, 3)
+        self.assertEqual(workbook["Results"][2][5].value, "'=1+1")
+        self.assertEqual(workbook["Evidence"][2][9].value, 3)
 
 
 if __name__ == "__main__":
