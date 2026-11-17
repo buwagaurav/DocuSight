@@ -116,5 +116,7 @@ def _visual(doc_id: str) -> None:
         techs = list(dict.fromkeys((store.docs[doc_id].techniques or []) + ["ColPali visual index"]))
         store.update(doc_id, visual_index="ready", stage="Ready", techniques=techs)
     except Exception as e:
+        if doc_id not in store.docs or not store.dir(doc_id).exists():
+            return  # document was deleted while it was being indexed
         traceback.print_exc()
         store.update(doc_id, visual_index="error", stage="Ready", error=f"ColPali: {e}"[:300])

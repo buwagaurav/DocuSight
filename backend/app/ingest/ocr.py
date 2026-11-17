@@ -160,6 +160,11 @@ class _Worker:
             finally:
                 self._last_used = time.time()
         if "error" in msg:
+            if "[METAL]" in msg["error"]:
+                # After a GPU fault macOS ignores further work from that process ("prior/excessive GPU
+                # errors"), so a poisoned worker must be replaced, not reused.
+                with self._lock:
+                    self._stop()
             raise RuntimeError(msg["error"])
         return msg
 
@@ -181,9 +186,18 @@ def ocr_available() -> bool:
 
 
 def ocr_page(image: Path) -> OcrResult:
+    from ..retrieval.device import on_device
     from ..tables import clean_columns, coerce_types
 
-    msg = _worker.run(image)
+    # Run on the shared device queue: MLX (OCR worker) and PyTorch MPS (ColPali, EmbeddingGemma)
+    # submitting GPU work at the same time trips the macOS GPU watchdog (kIOGPUCommandBufferCallbackErrorTimeout).
+    try:
+        msg = on_device(_worker.run, image)
+    except RuntimeError as e:
+        if "[METAL]" not in str(e):
+            raise
+        print(f"[ocr] GPU error, retrying once with a fresh worker: {str(e)[:120]}")
+        msg = on_device(_worker.run, image)
     markdown, raw_tables = parse_ocr_output(msg.get("text", ""))
     frames = []
     for rows in raw_tables:
