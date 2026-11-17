@@ -108,7 +108,7 @@ export interface ExtractionCell {
   raw_value: string;
   normalized_value: unknown;
   status: "supported" | "missing" | "illegible" | "not_applicable" | "conflicting" | "unsupported";
-  evidence: { text: string; page: number | null; start_char?: number | null; end_char?: number | null; verified?: boolean | null; document_id?: string; filename?: string }[];
+  evidence: { text: string; page: number | null; start_char?: number | null; end_char?: number | null; verified?: boolean | null; document_id?: string; filename?: string; coordinates?: { x0: number; y0: number; x1: number; y1: number; x: number; y: number; width: number; height: number }[]; coordinate_status?: "located" | "unavailable"; coordinate_source?: "pdf_text" | null }[];
   validation_issues: string[];
   review_status: string;
   original_model_value?: { value: string; normalized_value: unknown; status: string } | null;
@@ -294,6 +294,13 @@ export const api = {
   correctExtractionCell: (id: string, observationId: string, fieldId: string, body: { value: string; normalized_value: unknown; status: string }) =>
     fetch(`${API}/api/extraction/projects/${id}/results/${observationId}/fields/${fieldId}`, { method: "PATCH",
       headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<ExtractionCell>(r)),
+  correctEvidenceCoordinates: (id: string, observationId: string, fieldId: string, evidenceIndex: number, coordinates: { x: number; y: number; width: number; height: number }[]) =>
+    fetch(`${API}/api/extraction/projects/${id}/results/${observationId}/fields/${fieldId}/evidence/${evidenceIndex}/coordinates`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ coordinates }) }).then((r) => j(r)),
+  annotatedPdfUrl: (id: string, observationId: string, fieldId: string) => {
+    const params = new URLSearchParams({ observation_id: observationId, field_id: fieldId });
+    return `${API}/api/extraction/projects/${id}/rendered.pdf?${params}`;
+  },
   deleteExtractionProject: (id: string) => fetch(`${API}/api/extraction/projects/${id}`, { method: "DELETE" }).then((r) => j<{ ok: boolean }>(r)),
   extractionExportUrl: (id: string, format: "json" | "csv" | "xlsx") => `${API}/api/extraction/projects/${id}/export/${format}`,
 };

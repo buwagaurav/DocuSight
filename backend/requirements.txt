@@ -6,6 +6,7 @@ python-dotenv>=1.0
 
 # LLM (Claude — vision + tool use)
 anthropic>=0.40               # Messages API client, used for Claude and for DeepSeek's Anthropic-compatible endpoint
+openai>=1.66                  # Gemini's OpenAI-compatible API
 
 # Parsing
 pymupdf>=1.24

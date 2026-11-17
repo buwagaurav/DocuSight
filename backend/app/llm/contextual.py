@@ -14,14 +14,14 @@ from typing import Callable
 
 from ..config import FAST_MODEL
 from ..store import Chunk
-from .client import effort, get_client, response_text
+from .client import effort, messages_api, response_text
 
 MAX_CHUNKS = 400
 DOC_CHARS = 300_000
 
 
 def contextualize(doc_text: str, chunks: list[Chunk], progress: Callable[[float], None]) -> int:
-    client = get_client()
+    api = messages_api()
     doc_block = {"type": "text", "text": f"<document>\n{doc_text[:DOC_CHARS]}\n</document>",
                  "cache_control": {"type": "ephemeral"}}
     targets = [c for c in chunks if c.kind in {"text", "table"}][:MAX_CHUNKS]
@@ -30,7 +30,7 @@ def contextualize(doc_text: str, chunks: list[Chunk], progress: Callable[[float]
     def one(c: Chunk) -> None:
         nonlocal done
         try:
-            resp = client.messages.create(
+            resp = api.create(
                 model=FAST_MODEL,
                 max_tokens=1024,
                 output_config={"effort": effort("low")},

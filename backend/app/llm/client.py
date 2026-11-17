@@ -9,14 +9,18 @@ from typing import Any
 
 import anthropic
 
-from ..config import DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, LLM_MODEL, LLM_PROVIDER
+from ..config import DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, GEMINI_API_KEY, LLM_MODEL, LLM_PROVIDER
 
-# Both providers speak the Anthropic Messages API: Claude natively, DeepSeek through
-# its Anthropic-compatible endpoint. One client type, one agent loop.
+# Claude and DeepSeek use Anthropic Messages; Gemini is adapted through Google's
+# OpenAI-compatible endpoint so the same extraction and agent loop can be reused.
 
 
 @lru_cache(maxsize=1)
-def get_client() -> anthropic.Anthropic:
+def get_client() -> Any:
+    if LLM_PROVIDER == "gemini":
+        from .gemini_compat import make_client
+
+        return make_client(GEMINI_API_KEY)
     if LLM_PROVIDER == "deepseek":
         return anthropic.Anthropic(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL, max_retries=3)
     # Resolves ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or an `ant auth login` profile.
@@ -25,6 +29,8 @@ def get_client() -> anthropic.Anthropic:
 
 def messages_api() -> Any:
     """`client.beta.messages` for Claude (needed for refusal fallbacks), plain `client.messages` otherwise."""
+    if LLM_PROVIDER == "gemini":
+        return get_client()
     return get_client().beta.messages if LLM_PROVIDER == "anthropic" else get_client().messages
 
 
@@ -53,6 +59,8 @@ def llm_available() -> bool:
 
     if LLM_PROVIDER == "deepseek":
         return bool(DEEPSEEK_API_KEY)
+    if LLM_PROVIDER == "gemini":
+        return bool(GEMINI_API_KEY)
     if os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN") or os.getenv("ANTHROPIC_PROFILE"):
         return True
     return (Path.home() / ".config" / "anthropic").exists()  # `ant auth login` profile
@@ -76,6 +84,17 @@ def response_text(resp: Any) -> str:
 
 
 def describe_error(e: Exception) -> str:
+    if LLM_PROVIDER == "gemini":
+        from openai import APIConnectionError, APIStatusError, AuthenticationError, RateLimitError
+
+        if isinstance(e, AuthenticationError):
+            return "Gemini authentication failed — check GEMINI_API_KEY in .env and restart the backend."
+        if isinstance(e, RateLimitError):
+            return "Gemini API rate limit reached — check your quota or retry later."
+        if isinstance(e, APIStatusError):
+            return f"Gemini API error {e.status_code}: {str(e)[:300]}"
+        if isinstance(e, APIConnectionError):
+            return "Could not reach the Gemini API (network error)."
     if isinstance(e, anthropic.AuthenticationError):
         key = "DEEPSEEK_API_KEY" if LLM_PROVIDER == "deepseek" else "ANTHROPIC_API_KEY"
         return f"{LLM_PROVIDER.title()} authentication failed — check {key} in .env and restart the backend."
