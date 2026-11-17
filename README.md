@@ -5,8 +5,9 @@ Drop in a PDF or Excel file. DocuSight immediately parses it and shows every key
 ```
 ┌──────────── Next.js + React + TypeScript (frontend/) ─────────────┐
 │ Sidebar: drag-drop upload · docs · chat scope                      │
-│ Workspace: Overview (auto-extraction) · Tables & Data (grid,       │
-│            charts, SQL console) · Pages/Sheets · Retrieval Lab     │
+│ Workspace: Overview (auto-extraction, click a value → highlighted  │
+│            in its page/sheet) · Tables & Data (grid, charts, SQL   │
+│            console) · Pages/Sheets · Retrieval Lab · Extraction    │
 │ Chat: streaming answers · [S#] citations → page viewer · tool      │
 │       timeline · reasoning · inline charts · settings              │
 └───────────────────────────────┬────────────────────────────────────┘
@@ -171,15 +172,25 @@ If EmbeddingGemma fails to load for any reason, DocuSight **switches to `bge-sma
 
 This starts the backend on **:8000** and the frontend on **:3000**, and installs any missing dependencies first. Stop both with `Ctrl+C`.
 
+**Updating an existing checkout:** after `git pull`, install any new dependencies before starting:
+
+```bash
+source .venv/bin/activate
+pip install -r backend/requirements.txt
+(cd frontend && npm install)
+```
+
+`./run.sh` also reinstalls backend packages when a required one is missing, but running these two commands after every pull is the reliable way.
+
 ### Extraction: local setup and end-to-end flow
 
-The Extraction workspace is part of the existing frontend and backend. `pip install -r backend/requirements.txt` installs the only new backend dependency (`jsonschema`); `npm install` covers the frontend. No new database, vector store, embedding model, or language model is required. It reuses the configured Anthropic or DeepSeek provider and existing document/page/chunk store. Extraction processes all stored page text in bounded batches rather than relying only on top-k retrieval.
+The Extraction workspace is part of the existing frontend and backend. `pip install -r backend/requirements.txt` installs its backend dependencies (`jsonschema`, plus `openai` for the Gemini provider); `npm install` covers the frontend. No new database, vector store, embedding model, or language model is required. It reuses the configured Gemini, DeepSeek, or Anthropic provider and existing document/page/chunk store. Extraction processes all stored page text in bounded batches rather than relying only on top-k retrieval.
 
 1. In `.env`, choose the existing provider and API key as shown in Step 4, set `EXTRACTION_CLOUD_ENABLED=true`, and restart with `./run.sh`.
 2. Open http://localhost:3000, choose **Extraction**, and create a project with an objective.
 3. Upload one or more PDFs. Parsing, page rendering, indexing, and available OCR run locally. Wait until every PDF shows `ready`.
 4. Review the objective and suggested observation unit. Check the provider-consent box, choose **Discover schema**, review and edit fields, then save the schema. Saved schemas can be copied to another project.
-5. Choose **Start extraction**. Job progress persists to disk. Open a result cell to inspect its evidence quote and source page, correct it, or rerun that field or document.
+5. Choose **Start extraction**. Job progress persists to disk. Open a result cell to inspect its evidence quote and source page (the quoted text is highlighted on the page), correct the value or its highlight box, or rerun that field or document. **Open annotated original PDF** downloads a copy of the PDF with the evidence highlighted; the original is never changed.
 6. Download JSON, CSV, or Excel. JSON retains typed values, evidence, review status, and validation details. CSV serializes nested/evidence data as JSON text and adds status/evidence/validation columns. Excel has Results, Evidence, and Validation sheets.
 
 The provider and model are shown before consent. Discovery and extraction are blocked when the environment flag is false or the configured provider is unavailable. This repository has no local text-generation model, so cloud inference is required for AI schema discovery and field extraction. The app never silently switches to a cloud provider. Extraction project uploads skip the existing automatic LLM summary, and are kept out of the main document list, Retrieval Lab and chat, so their content only reaches the provider through the project's consent step. Deleting a project also deletes its PDFs.
@@ -227,7 +238,11 @@ Then open **http://localhost:3000**. The header badges show the active LLM and w
 .venv/bin/python scripts/make_samples.py     # creates samples/acme_sales_fy2025.xlsx and samples/northwind_invoice.pdf
 ```
 
-Drag both files onto the upload box. Within about 15 seconds the **Overview** tab fills in with extracted fields. Try these chat questions:
+Drag both files onto the upload box. Within about 15 seconds the **Overview** tab fills in with extracted fields.
+
+**Click any field, metric or date** on the Overview to see where it came from. A **Source** panel opens on the right (in place of the chat) showing the PDF page zoomed to the value with a highlight box, or the spreadsheet with the cell(s) marked. Close it with **×** to get the chat back, or use the expand button to open the full Pages/Sheets tab. Text PDFs and spreadsheets are supported. Scanned pages have no text layer, so their values open the cited page without a highlight. Spreadsheet values the model computed (totals, averages, counts) aren't single cells, so they open the right sheet without a highlight.
+
+Try these chat questions:
 
 - *"What was the total revenue per sales rep after discounts? Show a chart."* (answered with SQL plus a chart)
 - *"Which quarter missed the 95% delivery target by the most?"* (answered from the chart image)
@@ -241,7 +256,10 @@ The first PDF also triggers the ColPali download and indexing, which runs in the
 |---|---|
 | UI shows "Can't reach the backend" | The backend isn't running on :8000. Check Terminal 1 for errors. |
 | `Address already in use` | Another process is using the port: `lsof -i :8000` (or `:3000`) and stop it. |
-| Header shows "LLM: no API key" | Set `DEEPSEEK_API_KEY` or `ANTHROPIC_API_KEY` in `.env` and restart the backend. |
+| Header shows "LLM: no API key" | Set the key for your `LLM_MODEL` provider (`GEMINI_API_KEY`, `DEEPSEEK_API_KEY` or `ANTHROPIC_API_KEY`) in `.env` and restart the backend. |
+| `ModuleNotFoundError` after `git pull` (e.g. `openai`, `jsonschema`) | New dependencies were added: `pip install -r backend/requirements.txt` in the venv, then restart. |
+| Frontend prints `✓ Ready`, then a Next.js "known security vulnerability … upgrade" notice and exits | Next.js stops once to show the notice. Start the frontend again (`cd frontend && npm run dev`); the next start keeps running. Upgrading Next.js removes the notice. |
+| Clicking an Overview value shows "Couldn't find this exact text" | The value was reworded or computed by the model, or the page is scanned. The cited page/sheet still opens; the value itself is not on it verbatim. |
 | `embedding_model` stays `(loading)` for a long time | The download is slow or blocked. Use Step 5 option A, B or C. |
 | Log shows `could not load google/embeddinggemma-2 … falling back` | The app is running on bge-small. Check internet or disk space, or use Step 5 option B. |
 | ColPali shows "off" | `pip install -r backend/requirements-colpali.txt`, and check `COLPALI_ENABLED` isn't `false`. |
@@ -290,6 +308,7 @@ All AI features (extraction, chat, contextual retrieval) use one model, chosen b
 
 | Spec | Key | Notes |
 |---|---|---|
+| `gemini:gemini-3.8-flash` | `GEMINI_API_KEY` | Google AI Studio, through Gemini's OpenAI-compatible API (`llm/gemini_compat.py` adapts the agent's requests). Reads page images. |
 | `deepseek:deepseek-flash` | `DEEPSEEK_API_KEY` | DeepSeek V4.1 Flash. Low cost, 1M context, **reads page images**. Uses DeepSeek's Anthropic-compatible API, so the same agent code runs on both providers. |
 | `anthropic:claude-opus-5-5` | `ANTHROPIC_API_KEY` | Strictest structured output, plus server-side refusal fallback |
 | `deepseek:deepseek-v4-pro` | `DEEPSEEK_API_KEY` | Text only: charts, scans and page images are not seen |
@@ -303,7 +322,7 @@ Provider differences are handled in `llm/client.py`:
 | Variable | Default | Notes |
 |---|---|---|
 | `LLM_MODEL` / `FINSIGHT_MODEL` | `anthropic:claude-opus-5-5` | `provider:model` used for extraction and chat |
-| `DEEPSEEK_API_KEY` / `ANTHROPIC_API_KEY` | — | Key for the chosen provider |
+| `GEMINI_API_KEY` / `DEEPSEEK_API_KEY` / `ANTHROPIC_API_KEY` | — | Key for the chosen provider |
 | `COLPALI_MODEL` | `vidore/colpali-v1.3` | Also `vidore/colqwen2.5-v0.2`, `vidore/colSmol-500M` |
 | `COLPALI_ENABLED` | `auto` | `false` to skip visual indexing |
 | `CONTEXTUAL_RETRIEVAL` | `false` | `true` = LLM chunk context with Haiku (extra cost) |
@@ -318,9 +337,9 @@ Provider differences are handled in `llm/client.py`:
 
 ## API
 
-`POST /api/documents` (multipart `files`) · `GET /api/documents` · `GET /api/documents/{id}` · `DELETE /api/documents/{id}` · `POST /api/documents/{id}/extract` · `GET /api/documents/{id}/pages/{n}` · `GET /api/documents/{id}/sheets/{i}` · `GET /api/documents/{id}/tables/{name}` · `POST /api/documents/{id}/sql` · `POST /api/search` · `POST /api/chat` (SSE). Interactive docs are at http://localhost:8000/docs.
+`POST /api/documents` (multipart `files`) · `GET /api/documents` · `GET /api/documents/{id}` · `DELETE /api/documents/{id}` · `POST /api/documents/{id}/extract` · `GET /api/documents/{id}/pages/{n}` · `GET /api/documents/{id}/sheets/{i}` · `GET /api/documents/{id}/locate?text=…&source=…` (where an extracted value is: normalized PDF page boxes, or sheet cells) · `GET /api/documents/{id}/tables/{name}` · `POST /api/documents/{id}/sql` · `POST /api/search` · `POST /api/chat` (SSE). Interactive docs are at http://localhost:8000/docs.
 
-Schema-guided routes are under `/api/extraction`: create/list/open/delete projects, upload PDFs, discover and save versioned schemas, reuse a schema, estimate tokens, start jobs, page/filter results, correct cells, and export JSON/CSV/XLSX. Projects use the existing local document registry and add no database or queue.
+Schema-guided routes are under `/api/extraction`: create/list/open/delete projects, upload PDFs, discover and save versioned schemas, reuse a schema, estimate tokens, start jobs, page/filter results, correct cells and evidence boxes, render an annotated PDF, and export JSON/CSV/XLSX. See `docs/pdf-evidence-extraction-and-rendering.md` for the evidence-coordinate format. Projects use the existing local document registry and add no database or queue.
 
 ## Notes
 

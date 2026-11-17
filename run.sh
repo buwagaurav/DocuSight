@@ -6,7 +6,7 @@ cd "$(dirname "$0")"
 if [ ! -d .venv ]; then
   python3 -m venv .venv
 fi
-if ! .venv/bin/python -c "import fastapi, fastembed, duckdb, pymupdf, sentence_transformers" 2>/dev/null; then
+if ! .venv/bin/python -c "import fastapi, fastembed, duckdb, pymupdf, sentence_transformers, jsonschema, openai" 2>/dev/null; then
   echo "Installing backend dependencies…"
   .venv/bin/pip install -q -r backend/requirements.txt
   echo "Tip: for ColPali visual retrieval also run: .venv/bin/pip install -r backend/requirements-colpali.txt"

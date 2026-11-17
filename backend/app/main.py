@@ -17,6 +17,7 @@ from . import pipeline
 from .config import COLPALI_MODEL, CORS_ORIGINS, OCR_MODEL, RERANK_MODEL
 from .ingest.ocr import ocr_available
 from .llm.agent import cache, run_agent
+from .locate import locate
 from .llm.client import llm_available, model_label
 from .retrieval.colpali import colpali
 from .retrieval.hybrid import retriever
@@ -147,6 +148,15 @@ def sheet_grid(doc_id: str, index: int) -> dict[str, Any]:
     if not path.exists():
         raise HTTPException(404, "Sheet not found")
     return json.loads(path.read_text())
+
+
+@app.get("/api/documents/{doc_id}/locate")
+def locate_value(doc_id: str, text: str, source: str = "") -> dict[str, Any]:
+    """Where an extracted value sits in the original: PDF page boxes or sheet cells."""
+    meta = _doc(doc_id)
+    if meta.status != "ready":
+        raise HTTPException(409, "Document is still processing")
+    return locate(doc_id, text, source)
 
 
 @app.get("/api/documents/{doc_id}/tables/{table}")

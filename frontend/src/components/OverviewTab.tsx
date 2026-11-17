@@ -16,7 +16,7 @@ import {
   Star,
 } from "lucide-react";
 import { useMemo, useState } from "react";
-import { api, type Doc, type KeyField } from "@/lib/api";
+import { api, type Doc, type Highlight, type KeyField } from "@/lib/api";
 import { Badge, Button, Card, CopyButton, SectionTitle, Spinner, cn, download, toCSV } from "./ui";
 
 const IMPORTANCE_ORDER = { critical: 0, high: 1, normal: 2 } as const;
@@ -33,7 +33,20 @@ function SourceChip({ source, onOpen }: { source: string; onOpen: (page: number)
   return <span className="text-[11px] text-muted">{source}</span>;
 }
 
-export default function OverviewTab({ doc, onAsk, onOpenPage }: { doc: Doc; onAsk: (q: string) => void; onOpenPage: (p: number) => void }) {
+export default function OverviewTab({
+  doc,
+  onAsk,
+  onOpenPage,
+  onLocate,
+  selected,
+}: {
+  doc: Doc;
+  onAsk: (q: string) => void;
+  onOpenPage: (p: number) => void;
+  onLocate: (h: Highlight) => void;
+  selected: Highlight | null;
+}) {
+  const isSelected = (label: string, text: string) => selected?.label === label && selected?.text === text;
   const ex = doc.extraction;
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<string | null>(null);
@@ -115,16 +128,14 @@ export default function OverviewTab({ doc, onAsk, onOpenPage }: { doc: Doc; onAs
           <SectionTitle icon={<Gauge className="h-4 w-4" />}>Key metrics</SectionTitle>
           <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3">
             {ex.metrics.slice(0, 12).map((m, i) => (
-              <Card key={i} className="p-3.5">
+              <Card key={i} className={cn("p-3.5", isSelected(m.label, m.value) && "border-accent ring-2 ring-accent")} title="Show in document" onClick={() => onLocate({ label: m.label, text: m.value, source: m.source })}>
                 <div className="text-xs font-medium text-ink-2">{m.label}</div>
                 <div className="mt-1 text-2xl font-semibold tabular-nums tracking-tight text-ink">
                   {m.value}
                   {m.unit && !m.value.includes(m.unit) && <span className="ml-1 text-sm font-medium text-muted">{m.unit}</span>}
                 </div>
                 {m.context && <div className="mt-1 line-clamp-2 text-xs text-muted">{m.context}</div>}
-                <div className="mt-1.5">
-                  <SourceChip source={m.source} onOpen={onOpenPage} />
-                </div>
+                <div className="mt-1.5 text-[11px] text-accent">{m.source}</div>
               </Card>
             ))}
           </div>
@@ -173,7 +184,16 @@ export default function OverviewTab({ doc, onAsk, onOpenPage }: { doc: Doc; onAs
         </div>
         <div className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-2.5">
           {fields.map((f, i) => (
-            <Card key={i} className={cn("group p-3", f.importance === "critical" && "border-l-[3px] border-l-accent")}>
+            <Card
+              key={i}
+              title="Show in document"
+              onClick={() => onLocate({ label: f.label, text: f.value, source: f.source })}
+              className={cn(
+                "group p-3",
+                f.importance === "critical" && "border-l-[3px] border-l-accent",
+                isSelected(f.label, f.value) && "border-accent ring-2 ring-accent",
+              )}
+            >
               <div className="flex items-start justify-between gap-2">
                 <div className="text-xs font-medium text-ink-2">{f.label}</div>
                 <div className="flex items-center gap-1">
@@ -185,7 +205,7 @@ export default function OverviewTab({ doc, onAsk, onOpenPage }: { doc: Doc; onAs
               <div className="mt-1 break-words text-[15px] font-medium text-ink">{f.value}</div>
               <div className="mt-1.5 flex items-center justify-between">
                 <span className="text-[11px] text-muted">{f.category}</span>
-                <SourceChip source={f.source} onOpen={onOpenPage} />
+                <span className="text-[11px] text-accent">{f.source}</span>
               </div>
             </Card>
           ))}
@@ -236,13 +256,21 @@ export default function OverviewTab({ doc, onAsk, onOpenPage }: { doc: Doc; onAs
             <SectionTitle icon={<CalendarDays className="h-4 w-4" />}>Dates</SectionTitle>
             <Card className="divide-y divide-[var(--border)]">
               {ex.dates.map((d, i) => (
-                <div key={i} className="flex items-center justify-between gap-3 px-4 py-2.5 text-sm">
+                <button
+                  key={i}
+                  title="Show in document"
+                  onClick={() => onLocate({ label: d.label, text: d.date, source: d.source })}
+                  className={cn(
+                    "flex w-full items-center justify-between gap-3 px-4 py-2.5 text-left text-sm hover:bg-panel-2",
+                    isSelected(d.label, d.date) && "bg-accent-soft",
+                  )}
+                >
                   <span className="text-ink-2">{d.label}</span>
                   <span className="flex items-center gap-2">
                     <span className="font-medium tabular-nums text-ink">{d.date}</span>
-                    <SourceChip source={d.source} onOpen={onOpenPage} />
+                    <span className="text-[11px] text-accent">{d.source}</span>
                   </span>
-                </div>
+                </button>
               ))}
             </Card>
           </section>

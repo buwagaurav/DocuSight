@@ -199,6 +199,19 @@ export interface ChatOptions {
   cache: boolean;
 }
 
+/** Where an extracted value sits in the original file (normalized page boxes, or sheet cells). */
+export type Located =
+  | { kind: "pdf"; page: number | null; boxes: { x: number; y: number; width: number; height: number }[]; status: LocateStatus; matched: string | null }
+  | { kind: "sheet"; sheet_index: number | null; cells: { row: number; col: number }[]; status: LocateStatus };
+export type LocateStatus = "found" | "ambiguous" | "partial" | "source_only" | "not_found";
+
+/** A value the user clicked in the Overview, to highlight in its source. */
+export interface Highlight {
+  label: string;
+  text: string;
+  source: string;
+}
+
 async function j<T>(res: Response): Promise<T> {
   if (!res.ok) {
     let msg = `${res.status} ${res.statusText}`;
@@ -223,6 +236,8 @@ export const api = {
   reExtract: (id: string) => fetch(`${API}/api/documents/${id}/extract`, { method: "POST" }).then((r) => j(r)),
   pageUrl: (id: string, page: number) => `${API}/api/documents/${id}/pages/${page}`,
   fileUrl: (id: string) => `${API}/api/documents/${id}/file`,
+  locate: (id: string, text: string, source: string) =>
+    fetch(`${API}/api/documents/${id}/locate?${new URLSearchParams({ text, source })}`).then((r) => j<Located>(r)),
   sheet: (id: string, index: number) =>
     fetch(`${API}/api/documents/${id}/sheets/${index}`).then((r) =>
       j<{ name: string; rows: string[][]; total_rows: number; total_cols: number }>(r),

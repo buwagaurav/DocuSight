@@ -1,108 +1,54 @@
 "use client";
 
 import { ChevronLeft, ChevronRight, Download, ZoomIn, ZoomOut } from "lucide-react";
-import { useEffect, useState } from "react";
-import { api, type Doc } from "@/lib/api";
-import { Badge, Button, Card, Spinner, cn } from "./ui";
+import { useState } from "react";
+import { api, type Doc, type Highlight } from "@/lib/api";
+import { HighlightBanner, PdfPage, SheetView, useLocated } from "./SourceView";
+import { Button, Card } from "./ui";
 
-function colName(i: number) {
-  let s = "";
-  for (i += 1; i > 0; i = Math.floor((i - 1) / 26)) s = String.fromCharCode(65 + ((i - 1) % 26)) + s;
-  return s;
-}
-
-function SheetView({ doc }: { doc: Doc }) {
-  const [idx, setIdx] = useState(0);
-  const [loaded, setLoaded] = useState<{ idx: number; name: string; rows: string[][]; total_rows: number; total_cols: number } | null>(null);
-  const grid = loaded?.idx === idx ? loaded : null;
-  useEffect(() => {
-    api
-      .sheet(doc.id, idx)
-      .then((g) => setLoaded({ idx, ...g }))
-      .catch(() => setLoaded(null));
-  }, [doc.id, idx]);
-  const meta = doc.sheets[idx];
-  return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap gap-1.5">
-        {doc.sheets.map((s) => (
-          <button
-            key={s.index}
-            onClick={() => setIdx(s.index)}
-            className={cn(
-              "rounded-lg border px-3 py-1.5 text-sm font-medium",
-              s.index === idx ? "border-accent bg-accent-soft text-accent-ink" : "border-line bg-panel text-ink-2 hover:bg-panel-2",
-            )}
-          >
-            {s.name}
-          </button>
-        ))}
-      </div>
-      {meta && (
-        <div className="flex flex-wrap gap-1.5">
-          <Badge>
-            {meta.rows.toLocaleString()} rows × {meta.cols} cols
-          </Badge>
-          <Badge tone="accent">{meta.tables.length} table(s) detected</Badge>
-          {!!meta.merged && <Badge>{meta.merged} merged ranges</Badge>}
-          {!!meta.formulas && <Badge>{meta.formulas} formulas</Badge>}
-          {!!meta.hidden && <Badge tone="warn">hidden sheet</Badge>}
-        </div>
-      )}
-      {!grid ? (
-        <div className="flex justify-center py-16">
-          <Spinner className="h-6 w-6 text-accent" />
-        </div>
-      ) : (
-        <div className="max-h-[620px] overflow-auto rounded-lg border border-line bg-panel">
-          <table className="border-collapse text-[12.5px]">
-            <thead className="sticky top-0 z-10">
-              <tr>
-                <th className="sticky left-0 z-20 w-10 border border-line bg-panel-2" />
-                {grid.rows[0]?.map((_, j) => (
-                  <th key={j} className="min-w-[80px] border border-line bg-panel-2 px-2 py-1 text-center text-[11px] font-medium text-muted">
-                    {colName(j)}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {grid.rows.map((r, i) => (
-                <tr key={i}>
-                  <td className="sticky left-0 border border-line bg-panel-2 px-2 py-1 text-right text-[11px] text-muted">{i + 1}</td>
-                  {r.map((v, j) => (
-                    <td
-                      key={j}
-                      title={v}
-                      className={cn("max-w-[260px] truncate whitespace-nowrap border border-line px-2 py-1 text-ink", /^-?[\d.,]+%?$/.test(v) && "text-right tabular-nums")}
-                    >
-                      {v}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {grid.total_rows > grid.rows.length && (
-            <div className="px-3 py-2 text-xs text-muted">
-              Showing the first {grid.rows.length} of {grid.total_rows.toLocaleString()} rows — the Data tab and chat cover all rows.
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-export default function PagesTab({ doc, page, setPage }: { doc: Doc; page: number | null; setPage: (p: number | null) => void }) {
+export default function PagesTab({
+  doc,
+  page,
+  setPage,
+  highlight,
+  onClearHighlight,
+}: {
+  doc: Doc;
+  page: number | null;
+  setPage: (p: number | null) => void;
+  highlight: Highlight | null;
+  onClearHighlight: () => void;
+}) {
   const [zoom, setZoom] = useState(1);
-  if (doc.kind !== "pdf") return <SheetView doc={doc} />;
+  const [sheetIdx, setSheetIdx] = useState(0);
+  const located = useLocated(doc.id, highlight, (r) => {
+    if (r.kind === "pdf" && r.page) setPage(r.page);
+    if (r.kind === "sheet" && r.sheet_index != null) setSheetIdx(r.sheet_index);
+  });
+
+  const banner = highlight && <HighlightBanner doc={doc} highlight={highlight} located={located} onClear={onClearHighlight} />;
+
+  if (doc.kind !== "pdf") {
+    return (
+      <div className="space-y-3">
+        {banner}
+        <SheetView doc={doc} idx={sheetIdx} setIdx={setSheetIdx} cells={located?.kind === "sheet" && located.sheet_index === sheetIdx ? located.cells : []} />
+      </div>
+    );
+  }
 
   if (page) {
     return (
       <div className="space-y-3">
+        {banner}
         <div className="flex flex-wrap items-center gap-2">
-          <Button size="sm" onClick={() => setPage(null)}>
+          <Button
+            size="sm"
+            onClick={() => {
+              setPage(null);
+              onClearHighlight();
+            }}
+          >
             All pages
           </Button>
           <Button size="sm" disabled={page <= 1} onClick={() => setPage(page - 1)} aria-label="Previous page">
@@ -129,33 +75,30 @@ export default function PagesTab({ doc, page, setPage }: { doc: Doc; page: numbe
             </a>
           </div>
         </div>
-        <div className="overflow-auto rounded-xl border border-line bg-panel-2 p-4">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={api.pageUrl(doc.id, page)}
-            alt={`Page ${page}`}
-            className="mx-auto rounded bg-white shadow-md"
-            style={{ width: `${Math.round(zoom * 100)}%`, maxWidth: "none" }}
-          />
+        <div className="max-h-[75vh] overflow-auto rounded-xl border border-line bg-panel-2 p-4">
+          <PdfPage doc={doc} page={page} zoom={zoom} boxes={located?.kind === "pdf" && located.page === page ? located.boxes : []} />
         </div>
       </div>
     );
   }
 
   return (
-    <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-3">
-      {Array.from({ length: doc.n_pages }, (_, i) => i + 1).map((p) => (
-        <button key={p} onClick={() => setPage(p)} className="group text-left">
-          <Card className="overflow-hidden p-1.5 transition-shadow group-hover:border-accent group-hover:shadow-md">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={api.pageUrl(doc.id, p)} alt={`Page ${p}`} loading="lazy" className="aspect-[3/4] w-full rounded bg-white object-contain object-top" />
-          </Card>
-          <div className="mt-1 text-center text-xs text-ink-2">
-            Page {p}
-            {doc.tables.some((t) => t.page === p) && <span className="ml-1 text-accent">· table</span>}
-          </div>
-        </button>
-      ))}
+    <div className="space-y-3">
+      {banner}
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-3">
+        {Array.from({ length: doc.n_pages }, (_, i) => i + 1).map((p) => (
+          <button key={p} onClick={() => setPage(p)} className="group text-left">
+            <Card className="overflow-hidden p-1.5 transition-shadow group-hover:border-accent group-hover:shadow-md">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={api.pageUrl(doc.id, p)} alt={`Page ${p}`} loading="lazy" className="aspect-[3/4] w-full rounded bg-white object-contain object-top" />
+            </Card>
+            <div className="mt-1 text-center text-xs text-ink-2">
+              Page {p}
+              {doc.tables.some((t) => t.page === p) && <span className="ml-1 text-accent">· table</span>}
+            </div>
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

@@ -2,18 +2,19 @@
 
 import { AlertCircle, Database, Eye, FileStack, FlaskConical, LayoutDashboard, MessageSquare, Moon, ScanEye, Sun, Table2, UploadCloud } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, type Doc, type Health } from "@/lib/api";
+import { api, type Doc, type Health, type Highlight } from "@/lib/api";
 import ChatPanel, { type ChatHandle } from "./ChatPanel";
 import DataTab from "./DataTab";
 import ExtractionWorkspace from "./ExtractionWorkspace";
 import OverviewTab from "./OverviewTab";
 import PagesTab from "./PagesTab";
 import SearchLab from "./SearchLab";
+import SourcePanel from "./SourcePanel";
 import Sidebar from "./Sidebar";
 import { Badge, Empty, Progress, Spinner, cn } from "./ui";
 
 type Tab = "overview" | "data" | "pages" | "lab" | "extraction";
-type MobilePane = "docs" | "doc" | "chat";
+type MobilePane = "docs" | "doc" | "chat" | "source";
 
 export default function AppShell() {
   const [docs, setDocs] = useState<Doc[]>([]);
@@ -23,6 +24,9 @@ export default function AppShell() {
   const [scope, setScope] = useState<Set<string>>(new Set());
   const [tab, setTab] = useState<Tab>("overview");
   const [page, setPage] = useState<number | null>(null);
+  const [highlight, setHighlight] = useState<Highlight | null>(null);
+  // value shown in the right-hand source panel (in place of the chat) while browsing the Overview
+  const [preview, setPreview] = useState<Highlight | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [pane, setPane] = useState<MobilePane>("doc");
@@ -111,12 +115,29 @@ export default function AppShell() {
     const extra = active && active.status === "ready" ? [active.id] : [];
     if (extra.length) setScope((s) => new Set([...s, ...extra]));
     chat.current?.ask(q, extra);
+    setPreview(null);
     setPane("chat");
   };
   const openPage = (docId: string, p: number) => {
     setActiveId(docId);
     setTab("pages");
     setPage(p);
+    setHighlight(null);
+    setPane("doc");
+  };
+  const showInDocument = (h: Highlight) => {
+    setTab("pages");
+    setPage(null);
+    setHighlight(h);
+    setPreview(null);
+    setPane("doc");
+  };
+  const showSource = (h: Highlight) => {
+    setPreview(h);
+    setPane("source");
+  };
+  const closeSource = () => {
+    setPreview(null);
     setPane("doc");
   };
 
@@ -186,6 +207,8 @@ export default function AppShell() {
             onSelect={(id) => {
               setActiveId(id);
               setPage(null);
+              setHighlight(null);
+              setPreview(null);
               setPane("doc");
             }}
             onToggleScope={(id) =>
@@ -219,6 +242,8 @@ export default function AppShell() {
                     onClick={() => {
                       setTab(t.id);
                       if (t.id === "pages") setPage(null);
+                      setHighlight(null);
+                      setPreview(null);
                     }}
                     className={cn(
                       "flex items-center gap-1.5 whitespace-nowrap border-b-2 px-3 py-3 text-sm font-medium transition-colors",
@@ -252,11 +277,11 @@ export default function AppShell() {
                     {active.error}
                   </Empty>
                 ) : tab === "overview" ? (
-                  <OverviewTab doc={active} onAsk={ask} onOpenPage={(p) => openPage(active.id, p)} />
+                  <OverviewTab doc={active} onAsk={ask} onOpenPage={(p) => openPage(active.id, p)} selected={preview} onLocate={showSource} />
                 ) : tab === "data" ? (
                   <DataTab key={active.id} doc={active} />
                 ) : tab === "pages" ? (
-                  <PagesTab key={active.id} doc={active} page={page} setPage={setPage} />
+                  <PagesTab key={active.id} doc={active} page={page} setPage={setPage} highlight={highlight} onClearHighlight={() => setHighlight(null)} />
                 ) : (
                   <SearchLab docs={readyDocs} colpaliAvailable={!!health?.colpali.available} onOpenPage={openPage} />
                 )}
@@ -264,15 +289,21 @@ export default function AppShell() {
           </>
         </main>
 
-        {/* chat */}
-        <div className={cn("min-h-0 border-l border-line bg-panel", pane === "chat" ? "block" : "hidden lg:block")}>
-          <ChatPanel
-            docs={docs}
-            scope={scopeIds}
-            ref={chat}
-            llmAvailable={!!health?.llm.available}
-            colpaliAvailable={!!health?.colpali.available}
-          />
+        {/* chat, or the source panel while a value from the Overview is selected */}
+        <div className={cn("min-h-0 border-l border-line bg-panel", pane === "chat" || pane === "source" ? "block" : "hidden lg:block")}>
+          {preview && active && pane !== "chat" && (
+            <SourcePanel key={active.id} doc={active} highlight={preview} onClose={closeSource} onOpenFull={() => showInDocument(preview)} />
+          )}
+          {/* stays mounted underneath so the conversation survives opening a source */}
+          <div className={cn("h-full", preview && active && pane !== "chat" && "hidden")}>
+            <ChatPanel
+              docs={docs}
+              scope={scopeIds}
+              ref={chat}
+              llmAvailable={!!health?.llm.available}
+              colpaliAvailable={!!health?.colpali.available}
+            />
+          </div>
         </div>
       </div>
 

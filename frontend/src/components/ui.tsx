@@ -60,8 +60,25 @@ export function Spinner({ className }: { className?: string }) {
   return <Loader2 className={cn("animate-spin", className ?? "h-4 w-4")} />;
 }
 
-export function Card({ children, className }: { children: ReactNode; className?: string }) {
-  return <div className={cn("rounded-xl border border-line bg-panel", className)}>{children}</div>;
+export function Card({ children, className, onClick, title }: { children: ReactNode; className?: string; onClick?: () => void; title?: string }) {
+  if (!onClick) return <div className={cn("rounded-xl border border-line bg-panel", className)}>{children}</div>;
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      title={title}
+      onClick={onClick}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onClick();
+        }
+      }}
+      className={cn("cursor-pointer rounded-xl border border-line bg-panel transition-colors hover:border-accent focus-visible:outline-2 focus-visible:outline-accent", className)}
+    >
+      {children}
+    </div>
+  );
 }
 
 export function SectionTitle({ icon, children, right }: { icon?: ReactNode; children: ReactNode; right?: ReactNode }) {
