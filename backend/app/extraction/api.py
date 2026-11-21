@@ -25,10 +25,9 @@ from ..retrieval.hybrid import retriever
 from ..config import EXTRACTION_CLOUD_ENABLED
 from ..llm.client import llm_available, model_label
 from ..store import store
-from ..tables import preview
-from ..spreadsheet_structure import inspect_range, load_structure
 from .projects import projects
 from .rendering import render_annotated_pdf
+from .spreadsheet import extract_document as extract_spreadsheet_document
 from .service import (
     discover_schema,
     estimate_project,
@@ -255,77 +254,26 @@ def extract_spreadsheet_schema(project_id: str, body: SpreadsheetExtractionReque
                                     if doc_id in store.docs and store.docs[doc_id].kind != "pdf"]
     if not doc_ids:
         raise HTTPException(400, "Attach at least one spreadsheet document")
-    observations = []
     for doc_id in doc_ids:
         meta = store.docs.get(doc_id)
         if not meta or doc_id not in project.get("documents", []) or meta.kind == "pdf":
             raise HTTPException(400, "Every selected document must be an attached spreadsheet")
         if meta.status != "ready":
             raise HTTPException(409, f"{meta.filename} is not ready")
-        structure = load_structure(doc_id)
-        tables = [table for table in meta.tables if table.get("sheet")]
-        rows_by_label: dict[tuple[str, str], dict[str, Any]] = {}
-        for table in tables:
-            bounds = table.get("source_bounds")
-            if not bounds:
-                continue
-            values = preview(store.tables_db(doc_id), table["name"], limit=5000, offset=0)
-            cols = [str(name) for name in values.get("columns", [])]
-            source_sheet = table["sheet"]
-            sheet_info = next((s for s in structure["sheets"] if s["name"] == source_sheet), None)
-            if not sheet_info:
-                continue
-            region = next((r for r in sheet_info["regions"] if r.get("table") == table["name"]), None)
-            for row_index, values_row in enumerate(values.get("rows", [])):
-                label = f"{source_sheet} row {row_index + 1}"
-                observation = rows_by_label.setdefault((source_sheet, label), {
-                    "id": f"{doc_id}:{source_sheet}:{row_index}", "record_key": label, "label": label,
-                    "document_id": doc_id, "filename": meta.filename, "observation_unit": "spreadsheet row",
-                    "fields": {}, "spreadsheet_evidence": True,
-                })
-                for field in fields:
-                    def key(value: str) -> str:
-                        return re.sub(r"[^a-z0-9]", "", value.casefold())
-                    candidates = [field["name"], field.get("description", "")]
-                    col_index = next((i for i, col in enumerate(cols) if key(col) in {key(c) for c in candidates if c}), None)
-                    if col_index is None or col_index >= len(values_row):
-                        continue
-                    value = values_row[col_index]
-                    if value is None or str(value).strip() == "":
-                        continue
-                    column = bounds[1] + (table.get("source_column_offsets") or list(range(len(cols))))[col_index]
-                    source_row = bounds[0] + (table.get("source_row_offsets") or
-                                               [table.get("data_start_row", bounds[0] + 1) - bounds[0] + i
-                                                for i in range(len(values.get("rows", [])))])[row_index]
-                    from ..spreadsheet_structure import _cell_address
-                    address = _cell_address(source_row, column)
-                    source_cell = inspect_range(doc_id, source_sheet, address)["rows"][0][0]
-                    raw_value = source_cell.get("raw_value")
-                    def comparable(value: Any) -> str:
-                        text = str(value if value is not None else "").strip().casefold()
-                        negative = text.startswith("(") and text.endswith(")")
-                        text = re.sub(r"[,$%()]", "", text).strip()
-                        return f"-{text}" if negative else text
-                    verified = raw_value is not None and comparable(raw_value) == comparable(value)
-                    evidence = {"document_id": doc_id, "filename": meta.filename, "sheet": source_sheet,
-                                "table": table["name"], "address": address, "range": address,
-                                "text": str(raw_value if raw_value is not None else value),
-                                "raw_value": raw_value, "formula": source_cell.get("formula"),
-                                "cached_value": source_cell.get("cached_value"),
-                                "verified": verified,
-                                "verification_status": "source_cell_match" if verified else "source_cell_mismatch"}
-                    observation["fields"][field["id"]] = {
-                        "field_id": field["id"], "document_id": doc_id, "value": str(value),
-                        "raw_value": str(raw_value if raw_value is not None else value), "normalized_value": value if verified else None,
-                        "status": "supported" if verified else "unsupported", "evidence": [evidence],
-                        "validation_issues": [] if verified else ["Source cell value did not match the parsed table row."],
-                        "review_status": "unreviewed", "model": "deterministic-spreadsheet",
-                    }
-        observations.extend(rows_by_label.values())
+        if not (store.dir(doc_id) / "spreadsheet_structure.json").exists():
+            raise HTTPException(409, f"{meta.filename} has no spreadsheet structure; re-upload it to build one")
+    observations, tables = [], []
+    for doc_id in doc_ids:
+        rows, report = extract_spreadsheet_document(doc_id, fields)
+        observations.extend(rows)
+        tables.extend({**item, "document_id": doc_id, "filename": store.docs[doc_id].filename} for item in report)
     projects.update(project_id, lambda p: p.update({"observations": [row for row in p.get("observations", [])
                                                                       if row.get("document_id") not in doc_ids] + observations,
                                                        "status": "complete"}))
+    matched = {fid for item in tables for fid in item["matched"]}
+    unmatched = [f["name"] for f in fields if f["id"] not in matched]
     return {"project_id": project_id, "observation_count": len(observations), "observations": observations,
+            "tables": tables, "unmatched_fields": unmatched,
             "method": "deterministic column-name matching with source-cell coordinates"}
 
 

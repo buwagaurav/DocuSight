@@ -266,7 +266,9 @@ export default function ExtractionWorkspace() {
       const ids = documents.filter((doc) => doc.kind !== "pdf" && doc.status === "ready").map((doc) => doc.id);
       const result = await api.extractSpreadsheetSchema(project.id, ids);
       await refreshCurrent();
-      setNotice(`Extracted ${result.observation_count} spreadsheet row(s) with source-cell evidence. No model call was used.`);
+      const unmatched = result.unmatched_fields ?? [];
+      setNotice(`Extracted ${result.observation_count} spreadsheet row(s) with source-cell evidence. No model call was used.` +
+        (unmatched.length ? ` No column matched ${unmatched.join(", ")}: fields are matched to column headers by name, so rename the field to the column's header to fill it.` : ""));
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   };

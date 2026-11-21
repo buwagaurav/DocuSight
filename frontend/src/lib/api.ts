@@ -316,7 +316,7 @@ export const api = {
     fetch(`${API}/api/extraction/projects/${projectId}/spreadsheet-documents/${docId}`, { method: "POST" }).then((r) => j(r)),
   extractSpreadsheetSchema: (projectId: string, document_ids?: string[]) =>
     fetch(`${API}/api/extraction/projects/${projectId}/spreadsheet-extract`, { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ document_ids: document_ids ?? [] }) }).then((r) => j<{ observation_count: number; observations: ExtractionObservation[] }>(r)),
+      body: JSON.stringify({ document_ids: document_ids ?? [] }) }).then((r) => j<{ observation_count: number; observations: ExtractionObservation[]; unmatched_fields: string[] }>(r)),
   discoverExtractionSchema: (id: string, body: { objective: string; observation_unit: string; cloud_consent: boolean }) =>
     fetch(`${API}/api/extraction/projects/${id}/discover`, { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body) }).then((r) => j<{ observation_unit: string; reasoning: string; fields: ExtractionField[] }>(r)),

@@ -252,7 +252,8 @@ def _parse_region(rows: list[list[Any]]) -> dict[str, Any]:
     source_column_offsets = [i for i, keep in enumerate(~df.isna().all(axis=0)) if keep]
     df = df.dropna(axis=1, how="all")
     df = df.loc[~df.apply(lambda r: all(_empty(v) for v in r), axis=1)]
-    source_row_offsets = [data_start + int(index) for index in df.index]
+    # offsets are relative to the region, so title rows stripped above count too
+    source_row_offsets = [leading_title_rows + data_start + int(index) for index in df.index]
     df = coerce_types(df).reset_index(drop=True)
     return {"kind": "table", "df": df, "title": " — ".join(t for t in title_lines if t),
             "header_offset": leading_title_rows + best, "data_offset": leading_title_rows + data_start,

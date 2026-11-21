@@ -199,11 +199,84 @@ def load_structure(doc_id: str) -> dict[str, Any]:
     return WorkbookStructure.model_validate_json(path.read_text()).model_dump(mode="json")
 
 
-def inspect_range(doc_id: str, sheet_name: str, address: str) -> dict[str, Any]:
-    structure = load_structure(doc_id)
-    sheet = next((item for item in structure["sheets"] if item["name"] == sheet_name), None)
-    if sheet is None:
-        raise KeyError("Sheet not found")
+class WorkbookReader:
+    """Reads bounded cell ranges from a document's original workbook, opening the file once.
+
+    SpreadsheetAgent (arXiv:2604.12282) reads a table through its recorded range rather than cell by cell.
+    Opening an .xlsx costs far more than reading from it, so callers that need many ranges (schema
+    extraction over every table row) use one reader for the whole document.
+    """
+
+    def __init__(self, doc_id: str):
+        self.path = store.source_path(doc_id)
+        self.ext = self.path.suffix.lower()
+        self._formula_wb = self._value_wb = None
+        self._frames: dict[str, Any] = {}
+
+    def __enter__(self) -> "WorkbookReader":
+        if self.ext in {".xlsx", ".xlsm"}:
+            import openpyxl
+            self._formula_wb = openpyxl.load_workbook(self.path, data_only=False, read_only=True)
+            self._value_wb = openpyxl.load_workbook(self.path, data_only=True, read_only=True)
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        for book in (self._formula_wb, self._value_wb):
+            if book:
+                book.close()
+
+    @property
+    def has_formulas(self) -> bool:
+        return self._formula_wb is not None
+
+    def _frame(self, sheet_name: str):
+        import pandas as pd
+        if self.ext in {".csv", ".tsv", ".txt"}:  # a delimited file is its single sheet, whatever it is called
+            if "" not in self._frames:
+                self._frames[""] = pd.read_csv(self.path, header=None, dtype=object, sep="\t" if self.ext == ".tsv" else None,
+                                               engine="python", on_bad_lines="skip")
+            return self._frames[""]
+        if not self._frames:
+            self._frames = pd.read_excel(self.path, sheet_name=None, header=None, dtype=object)
+        frame = self._frames.get(sheet_name)
+        if frame is None:
+            raise KeyError("Sheet not found")
+        return frame
+
+    def read(self, sheet_name: str, r0: int, c0: int, r1: int, c1: int) -> list[list[dict[str, Any]]]:
+        """Rows of cell dicts for the 1-based inclusive range; no size cap (callers bound it)."""
+        rows: list[list[dict[str, Any]]] = []
+        if self._formula_wb is not None:
+            if sheet_name not in self._formula_wb.sheetnames:
+                raise KeyError("Sheet not found")
+            formula_rows = self._formula_wb[sheet_name].iter_rows(min_row=r0, max_row=r1, min_col=c0, max_col=c1)
+            value_rows = self._value_wb[sheet_name].iter_rows(min_row=r0, max_row=r1, min_col=c0, max_col=c1)
+            for frow, vrow in zip(formula_rows, value_rows):
+                cells = []
+                row = r0 + len(rows)
+                for col, (fcell, vcell) in enumerate(zip(frow, vrow), start=c0):
+                    formula = fcell.value
+                    cached = vcell.value
+                    is_formula = isinstance(formula, str) and formula.startswith("=")
+                    cells.append({"address": _cell_address(row, col), "value": cached, "raw_value": cached,
+                                  "formula": formula if is_formula else None,
+                                  "cached_value": cached if is_formula else None,
+                                  "number_format": getattr(fcell, "number_format", None)})
+                rows.append(cells)
+            return rows
+        import pandas as pd
+        frame = self._frame(sheet_name)
+        for row in range(r0, r1 + 1):
+            cells = []
+            for col in range(c0, c1 + 1):
+                value = frame.iat[row-1, col-1] if row <= len(frame.index) and col <= len(frame.columns) else None
+                value = None if pd.isna(value) else str(value) if not isinstance(value, (int, float, bool)) else value
+                cells.append({"address": _cell_address(row, col), "value": value, "raw_value": value})
+            rows.append(cells)
+        return rows
+
+
+def _parse_range(address: str) -> tuple[int, int, int, int]:
     match = re.fullmatch(r"\$?([A-Z]{1,3})\$?(\d+)(?::\$?([A-Z]{1,3})\$?(\d+))?", address.upper())
     if not match:
         raise ValueError("Range must be an A1 cell or range, such as B2:D8")
@@ -214,61 +287,28 @@ def inspect_range(doc_id: str, sheet_name: str, address: str) -> dict[str, Any]:
         return total
     c0, r0 = col_num(match.group(1)), int(match.group(2))
     c1, r1 = col_num(match.group(3) or match.group(1)), int(match.group(4) or match.group(2))
+    return r0, c0, r1, c1
+
+
+def inspect_range(doc_id: str, sheet_name: str, address: str, reader: WorkbookReader | None = None) -> dict[str, Any]:
+    structure = load_structure(doc_id)
+    sheet = next((item for item in structure["sheets"] if item["name"] == sheet_name), None)
+    if sheet is None:
+        raise KeyError("Sheet not found")
+    r0, c0, r1, c1 = _parse_range(address)
     if r1 < r0 or c1 < c0 or (r1-r0+1)*(c1-c0+1) > MAX_INSPECT_CELLS:
         raise ValueError(f"Range must be ordered and contain at most {MAX_INSPECT_CELLS} cells")
     if r1 > sheet["rows"] or c1 > sheet["cols"]:
         raise ValueError("Range exceeds sheet dimensions")
-    meta = store.docs[doc_id]
-    source_path = store.source_path(doc_id)
-    rows = []
-    formula_wb = value_wb = None
-    try:
-        if source_path.suffix.lower() in {".xlsx", ".xlsm"}:
-            import openpyxl
-            formula_wb = openpyxl.load_workbook(source_path, data_only=False, read_only=True)
-            value_wb = openpyxl.load_workbook(source_path, data_only=True, read_only=True)
-            if sheet_name not in formula_wb.sheetnames:
-                raise KeyError("Sheet not found")
-            formula_ws, value_ws = formula_wb[sheet_name], value_wb[sheet_name]
-            formula_rows = formula_ws.iter_rows(min_row=r0, max_row=r1, min_col=c0, max_col=c1)
-            value_rows = value_ws.iter_rows(min_row=r0, max_row=r1, min_col=c0, max_col=c1)
-            for frow, vrow in zip(formula_rows, value_rows):
-                cells = []
-                row = r0 + len(rows)
-                for col, (fcell, vcell) in enumerate(zip(frow, vrow), start=c0):
-                    formula = fcell.value
-                    cached = vcell.value
-                    cells.append({"address": _cell_address(row, col), "value": cached,
-                                  "raw_value": cached, "formula": formula if isinstance(formula, str) and formula.startswith("=") else None,
-                                  "cached_value": cached if isinstance(formula, str) and formula.startswith("=") else None,
-                                  "number_format": fcell.number_format})
-                rows.append(cells)
-        else:
-            import pandas as pd
-            ext = source_path.suffix.lower()
-            if ext in {".csv", ".tsv", ".txt"}:
-                frame = pd.read_csv(source_path, header=None, dtype=object, sep="\t" if ext == ".tsv" else None,
-                                    engine="python", on_bad_lines="skip")
-            else:
-                book = pd.read_excel(source_path, sheet_name=None, header=None, dtype=object)
-                frame = book.get(sheet_name)
-                if frame is None:
-                    raise KeyError("Sheet not found")
-            for row in range(r0, r1 + 1):
-                cells = []
-                for col in range(c0, c1 + 1):
-                    value = frame.iat[row-1, col-1] if row <= len(frame.index) and col <= len(frame.columns) else None
-                    value = None if pd.isna(value) else str(value) if not isinstance(value, (int, float, bool)) else value
-                    cells.append({"address": _cell_address(row, col), "value": value, "raw_value": value})
-                rows.append(cells)
-    finally:
-        if formula_wb:
-            formula_wb.close()
-        if value_wb:
-            value_wb.close()
+    if reader is None:
+        with WorkbookReader(doc_id) as own:
+            rows, has_formulas = own.read(sheet_name, r0, c0, r1, c1), own.has_formulas
+    else:
+        rows, has_formulas = reader.read(sheet_name, r0, c0, r1, c1), reader.has_formulas
     return {"doc_id": doc_id, "sheet": sheet_name, "address": _range_address(r0, c0, r1, c1),
             "rows": rows, "merged_ranges": [rng for rng in sheet.get("merged_ranges", [])],
-            "verification_status": "source_cell_values", "formula_status": "expressions_and_cached_values" if source_path.suffix.lower() in {".xlsx", ".xlsm"} else "unavailable"}
+            "verification_status": "source_cell_values",
+            "formula_status": "expressions_and_cached_values" if has_formulas else "unavailable"}
 
 
 def render_range_png(doc_id: str, sheet_name: str, address: str) -> bytes:
@@ -298,7 +338,9 @@ def render_range_png(doc_id: str, sheet_name: str, address: str) -> bytes:
 
 def latex_range(doc_id: str, sheet_name: str, address: str) -> str:
     data = inspect_range(doc_id, sheet_name, address)
-    escape = lambda value: str(value or "").replace("\\", r"\textbackslash{}").replace("&", r"\&").replace("%", r"\%").replace("_", r"\_")
+    specials = {"\\": r"\textbackslash{}", "&": r"\&", "%": r"\%", "$": r"\$", "#": r"\#", "_": r"\_",
+                "{": r"\{", "}": r"\}", "~": r"\textasciitilde{}", "^": r"\textasciicircum{}"}
+    escape = lambda value: "".join(specials.get(ch, ch) for ch in str(value if value is not None else ""))
     ncols = len(data["rows"][0]) if data["rows"] else 1
     lines = [r"\begin{tabular}{" + "l" * ncols + "}", r"\hline"]
     for row in data["rows"]:
