@@ -34,6 +34,27 @@ export interface SheetMeta {
   hidden?: number;
 }
 
+export interface SpreadsheetStructure {
+  schema_version: number;
+  parser_version: number;
+  source_sha256: string;
+  format: string;
+  built_at: number;
+  sheets: { index: number; name: string; rows: number; cols: number; regions: {
+    id: string; sheet: string; kind: string; address: string; table: string | null; title: string; columns: string[];
+    confidence: number; review_status: string;
+  }[] }[];
+}
+
+export interface SpreadsheetRange {
+  doc_id: string;
+  sheet: string;
+  address: string;
+  rows: { address: string; value: unknown; raw_value: unknown; formula?: string | null; cached_value?: unknown }[][];
+  verification_status: string;
+  formula_status: string;
+}
+
 export interface KeyField {
   label: string;
   value: string;
@@ -108,7 +129,7 @@ export interface ExtractionCell {
   raw_value: string;
   normalized_value: unknown;
   status: "supported" | "missing" | "illegible" | "not_applicable" | "conflicting" | "unsupported";
-  evidence: { text: string; page: number | null; start_char?: number | null; end_char?: number | null; verified?: boolean | null; document_id?: string; filename?: string; coordinates?: { x0: number; y0: number; x1: number; y1: number; x: number; y: number; width: number; height: number }[]; coordinate_status?: "located" | "unavailable"; coordinate_source?: "pdf_text" | null }[];
+  evidence: { text: string; page?: number | null; sheet?: string; address?: string; range?: string; table?: string; start_char?: number | null; end_char?: number | null; verified?: boolean | null; verification_status?: string; document_id?: string; filename?: string; coordinates?: { x0: number; y0: number; x1: number; y1: number; x: number; y: number; width: number; height: number }[]; coordinate_status?: "located" | "unavailable"; coordinate_source?: "pdf_text" | null }[];
   validation_issues: string[];
   review_status: string;
   /** 0-1: how likely the value is right (model's own estimate adjusted by evidence checks); null for older results */
@@ -245,6 +266,15 @@ export const api = {
     fetch(`${API}/api/documents/${id}/sheets/${index}`).then((r) =>
       j<{ name: string; rows: string[][]; total_rows: number; total_cols: number }>(r),
     ),
+  spreadsheetStructure: (id: string) =>
+    fetch(`${API}/api/documents/${id}/spreadsheet-structure`).then((r) => j<SpreadsheetStructure>(r)),
+  spreadsheetRange: (id: string, sheet: string, address: string) =>
+    fetch(`${API}/api/documents/${id}/sheets/${encodeURIComponent(sheet)}/range?address=${encodeURIComponent(address)}`).then((r) => j<SpreadsheetRange>(r)),
+  spreadsheetRangeImageUrl: (id: string, sheet: string, address: string) =>
+    `${API}/api/documents/${id}/sheets/${encodeURIComponent(sheet)}/range.png?address=${encodeURIComponent(address)}`,
+  verifySpreadsheetStructure: (id: string, addresses: string[], sheet: string, cloud_consent: boolean) =>
+    fetch(`${API}/api/documents/${id}/spreadsheet-structure/verify`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ addresses, sheet, cloud_consent }) }).then((r) => j<{ status: string; assessments: { sheet: string; address: string; status: string; note: string }[]; vision_status: string }>(r)),
   table: (id: string, name: string, limit = 2000) =>
     fetch(`${API}/api/documents/${id}/tables/${name}?limit=${limit}`).then((r) =>
       j<{ columns: string[]; rows: unknown[][]; total: number }>(r),
@@ -282,6 +312,11 @@ export const api = {
     return fetch(`${API}/api/extraction/projects/${id}/documents`, { method: "POST", body: fd }).then((r) => j<Doc[]>(r));
   },
   extractionDocuments: (id: string) => fetch(`${API}/api/extraction/projects/${id}/documents`).then((r) => j<Doc[]>(r)),
+  attachSpreadsheetDocument: (projectId: string, docId: string) =>
+    fetch(`${API}/api/extraction/projects/${projectId}/spreadsheet-documents/${docId}`, { method: "POST" }).then((r) => j(r)),
+  extractSpreadsheetSchema: (projectId: string, document_ids?: string[]) =>
+    fetch(`${API}/api/extraction/projects/${projectId}/spreadsheet-extract`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ document_ids: document_ids ?? [] }) }).then((r) => j<{ observation_count: number; observations: ExtractionObservation[] }>(r)),
   discoverExtractionSchema: (id: string, body: { objective: string; observation_unit: string; cloud_consent: boolean }) =>
     fetch(`${API}/api/extraction/projects/${id}/discover`, { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body) }).then((r) => j<{ observation_unit: string; reasoning: string; fields: ExtractionField[] }>(r)),

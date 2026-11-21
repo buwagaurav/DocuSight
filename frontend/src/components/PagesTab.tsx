@@ -1,10 +1,73 @@
 "use client";
 
 import { ChevronLeft, ChevronRight, Download, ZoomIn, ZoomOut } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api, type Doc, type Highlight } from "@/lib/api";
 import { HighlightBanner, PdfPage, SheetView, useLocated } from "./SourceView";
 import { Button, Card } from "./ui";
+
+function RangeInspector({ doc, idx }: { doc: Doc; idx: number }) {
+  const [structure, setStructure] = useState<Awaited<ReturnType<typeof api.spreadsheetStructure>> | null>(null);
+  const [rangeText, setRangeText] = useState("");
+  const [rangeResult, setRangeResult] = useState<Awaited<ReturnType<typeof api.spreadsheetRange>> | null>(null);
+  const [rangeError, setRangeError] = useState("");
+  const [reviewConsent, setReviewConsent] = useState(false);
+  const [reviewMessage, setReviewMessage] = useState("");
+  useEffect(() => {
+    api.spreadsheetStructure(doc.id).then((value) => setStructure(value)).catch(() => setStructure(null));
+  }, [doc.id]);
+  const meta = doc.sheets[idx];
+  const regions = useMemo(() => structure?.sheets.find((s) => s.index === idx)?.regions ?? [], [structure, idx]);
+  const inspect = (address: string) => {
+    setRangeText(address);
+    setRangeError("");
+    api.spreadsheetRange(doc.id, meta?.name ?? "", address)
+      .then(setRangeResult)
+      .catch((error: Error) => { setRangeResult(null); setRangeError(error.message); });
+  };
+  return (
+    <>
+      {!!regions.length && (
+        <div className="space-y-2 rounded-lg border border-line bg-panel p-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm font-medium text-ink">Detected ranges</span>
+            {regions.map((region) => (
+              <Button key={region.id} size="sm" variant="ghost" onClick={() => inspect(region.address)} title={region.title}>
+                {region.table ?? region.address} · {region.address}
+              </Button>
+            ))}
+          </div>
+          <form className="flex flex-wrap gap-2" onSubmit={(event) => { event.preventDefault(); inspect(rangeText); }}>
+            <input aria-label="Spreadsheet cell range" value={rangeText} onChange={(event) => setRangeText(event.target.value)}
+              placeholder="A1:D12" className="w-36 rounded-md border border-line bg-panel px-2 py-1.5 text-sm" />
+            <Button size="sm" type="submit">Inspect range</Button>
+            {rangeResult && <a className="self-center text-xs text-accent underline" href={`${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"}/api/documents/${doc.id}/sheets/${encodeURIComponent(rangeResult.sheet)}/range.png?address=${encodeURIComponent(rangeResult.address)}`} target="_blank" rel="noreferrer">Open range image</a>}
+          </form>
+          <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
+            <label className="flex items-center gap-1.5"><input type="checkbox" checked={reviewConsent} onChange={(event) => setReviewConsent(event.target.checked)} />I agree to send this selected range to the configured model for review.</label>
+            <Button size="sm" disabled={!reviewConsent || !rangeText || !meta} onClick={async () => {
+              setRangeError(""); setReviewMessage("");
+              try {
+                const result = await api.verifySpreadsheetStructure(doc.id, [rangeText], meta.name, true);
+                setReviewMessage(result.assessments.map((item) => `${item.status}: ${item.note}`).join(" · ") || result.status);
+              } catch (error) { setRangeError((error as Error).message); }
+            }}>Ask model to review</Button>
+            {reviewMessage && <span>{reviewMessage}</span>}
+          </div>
+          {rangeError && <p role="alert" className="text-xs text-danger">{rangeError}</p>}
+          {rangeResult && <div className="overflow-auto rounded border border-line">
+            <div className="border-b border-line bg-panel-2 px-2 py-1 text-xs text-muted">{rangeResult.sheet}!{rangeResult.address} · {rangeResult.verification_status}</div>
+            <table className="border-collapse text-xs"><tbody>{rangeResult.rows.map((row, ri) => <tr key={ri}>
+              {row.map((cell) => <td key={cell.address} title={`${cell.address}${cell.formula ? ` · ${cell.formula}` : ""}`} className="border border-line px-2 py-1">
+                <span className="mr-1 text-[10px] text-muted">{cell.address}</span>{String(cell.value ?? "")}{cell.formula && <span className="ml-1 text-accent">ƒ</span>}
+              </td>)}
+            </tr>)}</tbody></table>
+          </div>}
+        </div>
+      )}
+    </>
+  );
+}
 
 export default function PagesTab({
   doc,
@@ -32,6 +95,7 @@ export default function PagesTab({
     return (
       <div className="space-y-3">
         {banner}
+        <RangeInspector doc={doc} idx={sheetIdx} />
         <SheetView doc={doc} idx={sheetIdx} setIdx={setSheetIdx} cells={located?.kind === "sheet" && located.sheet_index === sheetIdx ? located.cells : []} />
       </div>
     );

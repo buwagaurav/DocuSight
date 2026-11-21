@@ -20,6 +20,7 @@ from ..retrieval.colpali import colpali
 from ..retrieval.hybrid import retriever
 from ..retrieval.models import embed_queries
 from ..store import store
+from ..spreadsheet_structure import inspect_range
 from ..tables import run_sql
 from .client import describe_error, effort, image_block, llm_available, messages_api, model_label, provider_kwargs
 
@@ -67,6 +68,14 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "inspect_spreadsheet_range",
+        "description": "Read a bounded spreadsheet range directly from the uploaded workbook and return exact cell addresses, raw values, formulas, and cached values. Use this to verify spreadsheet evidence and cite source cells.",
+        "eager_input_streaming": True,
+        "input_schema": {"type": "object", "properties": {
+            "doc_id": {"type": "string"}, "sheet": {"type": "string"}, "address": {"type": "string"}},
+            "required": ["doc_id", "sheet", "address"]},
+    },
+    {
         "name": "view_pages",
         "description": "Look at specific PDF pages as images (to read charts, scans, signatures, small print, or "
                        "to verify a number). Max 4 pages per call.",
@@ -104,6 +113,7 @@ How to work:
 1. Route the question. Numeric / aggregate / filtering questions over tabular data → list_tables then run_sql \
 (exact answers beat reading rows). Everything else → search_documents. Charts, scans, figures or "what does page N \
 show" → look at page images (search results include them; view_pages for specific pages).
+For spreadsheet answers that need a source location, call inspect_spreadsheet_range and cite the returned sheet and cell addresses.
 2. Retrieve well: give search_documents several diverse queries and, for conceptual questions, a hypothetical answer.
 3. Self-check (corrective RAG): if results don't actually answer the question, reformulate and search again \
 (different terms, other document, SQL). Cross-check important numbers between text, tables and page images.
@@ -217,6 +227,9 @@ def _validate(name: str, args: Any) -> str | None:
     elif name == "run_sql":
         if not (isinstance(args.get("doc_id"), str) and isinstance(args.get("sql"), str)):
             return "doc_id and sql must be strings"
+    elif name == "inspect_spreadsheet_range":
+        if not all(isinstance(args.get(k), str) for k in ("doc_id", "sheet", "address")):
+            return "doc_id, sheet, and address must be strings"
     elif name == "view_pages":
         if not (isinstance(args.get("doc_id"), str) and isinstance(args.get("pages"), list)
                 and all(isinstance(p, int) for p in args["pages"])):
@@ -288,6 +301,18 @@ def _exec_tool(name: str, args: dict[str, Any], doc_ids: list[str], turn: Turn, 
                 {"columns": res["columns"], "rows": res["rows"][:50], "row_count": res["row_count"], "sql": args["sql"]},
                 [turn.sources[-1]])
 
+    if name == "inspect_spreadsheet_range":
+        d = args["doc_id"]
+        if d not in doc_ids or store.docs[d].kind == "pdf":
+            raise ValueError("Range inspection needs a spreadsheet document in scope")
+        res = inspect_range(d, args["sheet"], args["address"])
+        sid = turn.add_source(kind="spreadsheet_range", doc_id=d, sheet=res["sheet"],
+                              address=res["address"], snippet=f"{res['sheet']}!{res['address']}")
+        rendered = "\n".join(" | ".join(f"{cell['address']}={cell.get('value')}" +
+                                         (f" ({cell['formula']})" if cell.get("formula") else "") for cell in row)
+                              for row in res["rows"])
+        return f"[{sid}] Source cells {res['sheet']}!{res['address']} in {store.docs[d].filename}:\n{rendered}", res, [turn.sources[-1]]
+
     if name == "view_pages":
         d = args["doc_id"]
         if d not in doc_ids or store.docs[d].kind != "pdf":
@@ -317,6 +342,8 @@ def _tool_label(name: str, args: dict[str, Any]) -> str:
         return "Inspecting table schemas"
     if name == "run_sql":
         return "Running SQL query"
+    if name == "inspect_spreadsheet_range":
+        return f"Inspecting {args.get('sheet', '')}!{args.get('address', '')}"
     if name == "view_pages":
         return f"Looking at page(s) {', '.join(map(str, args.get('pages', [])))}"
     if name == "create_chart":

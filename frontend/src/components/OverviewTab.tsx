@@ -51,6 +51,8 @@ export default function OverviewTab({
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<string | null>(null);
   const [criticalOnly, setCriticalOnly] = useState(false);
+  const [startingExtraction, setStartingExtraction] = useState(false);
+  const [extractionError, setExtractionError] = useState("");
 
   const categories = useMemo(() => [...new Set((ex?.key_fields ?? []).map((f) => f.category).filter(Boolean))], [ex]);
   const fields = useMemo(() => {
@@ -62,13 +64,33 @@ export default function OverviewTab({
   }, [ex, query, category, criticalOnly]);
 
   if (!ex) {
+    const waiting = doc.status === "processing" || ["pending", "running"].includes(doc.extraction_status);
     return (
       <div className="flex flex-col items-center justify-center gap-3 py-24 text-center">
-        <Spinner className="h-7 w-7 text-accent" />
-        <p className="font-medium text-ink">Reading the document…</p>
-        <p className="max-w-sm text-sm text-ink-2">
-          Claude is looking at the pages and tables to extract every key field, metric and insight. You can already search or chat.
-        </p>
+        {waiting ? <>
+          <Spinner className="h-7 w-7 text-accent" />
+          <p className="font-medium text-ink">{doc.status === "processing" ? "Preparing the document…" : "Generating the document overview…"}</p>
+          <p className="max-w-sm text-sm text-ink-2">The overview is prepared after document processing. You can search or chat while it runs.</p>
+        </> : <>
+          <Sparkles className="h-7 w-7 text-muted" />
+          <p className="font-medium text-ink">Overview not generated</p>
+          <p className="max-w-sm text-sm text-ink-2">
+            {doc.extraction_status === "skipped"
+              ? "Overview generation was skipped for this upload. Start it now to extract key fields, metrics, and insights."
+              : doc.extraction_status === "error"
+                ? "Overview generation failed. You can retry it; search and chat are still available."
+                : "This document does not have an overview yet. You can generate one now."}
+          </p>
+          {extractionError && <p role="alert" className="text-sm text-bad">{extractionError}</p>}
+          <Button variant="primary" disabled={startingExtraction || doc.status !== "ready"} onClick={async () => {
+            setStartingExtraction(true); setExtractionError("");
+            try { await api.reExtract(doc.id); }
+            catch (error) { setExtractionError((error as Error).message); }
+            finally { setStartingExtraction(false); }
+          }}>
+            {startingExtraction ? <><Spinner className="h-4 w-4" /> Starting…</> : <><RefreshCw className="h-4 w-4" /> Generate overview</>}
+          </Button>
+        </>}
       </div>
     );
   }

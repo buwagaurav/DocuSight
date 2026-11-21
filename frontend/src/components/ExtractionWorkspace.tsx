@@ -48,6 +48,8 @@ export default function ExtractionWorkspace() {
   const [projects, setProjects] = useState<ProjectListItem[]>([]);
   const [project, setProject] = useState<ExtractionProject | null>(null);
   const [documents, setDocuments] = useState<Doc[]>([]);
+  const [availableDocs, setAvailableDocs] = useState<Doc[]>([]);
+  const [spreadsheetChoice, setSpreadsheetChoice] = useState("");
   const [observations, setObservations] = useState<ExtractionObservation[]>([]);
   const [resultTotal, setResultTotal] = useState(0);
   const [allResultTotal, setAllResultTotal] = useState(0);
@@ -84,6 +86,7 @@ export default function ExtractionWorkspace() {
     ]);
     setProject(p);
     setDocuments(docs);
+    setAvailableDocs(await api.docs());
     setEstimate(estimateResult);
     setObservations(resultPage.observations);
     setResultTotal(resultPage.total);
@@ -101,8 +104,8 @@ export default function ExtractionWorkspace() {
   }, [refreshProjectList]);
 
   useEffect(() => {
-    Promise.all([api.extractionCapabilities(), api.extractionProjects()])
-      .then(([caps, list]) => { setCapabilities(caps); setProjects(list); })
+    Promise.all([api.extractionCapabilities(), api.extractionProjects(), api.docs()])
+      .then(([caps, list, allDocs]) => { setCapabilities(caps); setProjects(list); setAvailableDocs(allDocs); })
       .catch((e) => setError((e as Error).message));
   }, []);
 
@@ -116,6 +119,7 @@ export default function ExtractionWorkspace() {
       ]);
       setProject(p);
       setDocuments(docs);
+      setAvailableDocs(await api.docs());
       setEstimate(estimateResult);
       setObservations(resultPage.observations);
       setResultTotal(resultPage.total);
@@ -234,8 +238,35 @@ export default function ExtractionWorkspace() {
     setBusy(true); setError(null); setNotice(null);
     try {
       await persistDefinition();
-      await api.startExtraction(project.id, { cloud_consent: cloudConsent });
-      await refreshCurrent(); setNotice("Extraction queued. Progress and results will update here.");
+      const pdfIds = documents.filter((doc) => doc.kind === "pdf").map((doc) => doc.id);
+      if (!pdfIds.length) throw new Error("This action starts PDF extraction. Use the spreadsheet extraction button for workbook rows.");
+      await api.startExtraction(project.id, { cloud_consent: cloudConsent, document_ids: pdfIds });
+      await refreshCurrent(); setNotice("PDF extraction queued. Progress and results will update here.");
+    } catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  };
+
+  const attachSpreadsheet = async () => {
+    if (!project || !spreadsheetChoice) return;
+    setBusy(true); setError(null);
+    try {
+      await api.attachSpreadsheetDocument(project.id, spreadsheetChoice);
+      setSpreadsheetChoice("");
+      await refreshCurrent();
+      setNotice("Spreadsheet attached. Its structure and source cells are available for local extraction.");
+    } catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  };
+
+  const runSpreadsheetExtraction = async () => {
+    if (!project) return;
+    setBusy(true); setError(null); setNotice(null);
+    try {
+      await persistDefinition();
+      const ids = documents.filter((doc) => doc.kind !== "pdf" && doc.status === "ready").map((doc) => doc.id);
+      const result = await api.extractSpreadsheetSchema(project.id, ids);
+      await refreshCurrent();
+      setNotice(`Extracted ${result.observation_count} spreadsheet row(s) with source-cell evidence. No model call was used.`);
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   };
@@ -402,6 +433,18 @@ export default function ExtractionWorkspace() {
               </div>
             </Card>
 
+            <Card className="p-4 2xl:col-span-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="mr-auto"><h2 className="font-semibold text-ink">Spreadsheet sources</h2><p className="mt-1 text-sm text-ink-2">Attach an already uploaded workbook. Schema matching and cell evidence run locally.</p></div>
+                <select aria-label="Choose spreadsheet" className="max-w-full rounded-lg border border-line bg-bg px-2.5 py-1.5 text-sm text-ink" value={spreadsheetChoice} onChange={(event) => setSpreadsheetChoice(event.target.value)}>
+                  <option value="">Choose a ready spreadsheet</option>
+                  {availableDocs.filter((doc) => doc.kind !== "pdf" && doc.status === "ready" && !documents.some((attached) => attached.id === doc.id)).map((doc) => <option key={doc.id} value={doc.id}>{doc.filename}</option>)}
+                </select>
+                <Button size="sm" disabled={busy || !spreadsheetChoice} onClick={attachSpreadsheet}>Attach workbook</Button>
+              </div>
+              {documents.some((doc) => doc.kind !== "pdf") && <Button size="sm" variant="primary" className="mt-3" disabled={busy || !documents.some((doc) => doc.kind !== "pdf" && doc.status === "ready") || fields.length === 0} onClick={runSpreadsheetExtraction}>Extract spreadsheet rows locally</Button>}
+            </Card>
+
             <Card className="p-4">
               <div className="flex items-center justify-between gap-2"><div><h2 className="font-semibold text-ink">2. Define the question and row</h2><p className="mt-1 text-sm text-ink-2">The row is one observation unit; a source PDF can contribute several rows.</p></div><Button size="sm" onClick={saveDetails} disabled={busy}><Save className="h-3.5 w-3.5" /> Save details</Button></div>
               <label className="mt-3 block text-xs font-medium text-ink-2">Project name</label>
@@ -478,7 +521,7 @@ export default function ExtractionWorkspace() {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div><h2 className="font-semibold text-ink">4. Extract, review, and export</h2><p className="mt-1 text-sm text-ink-2">Extraction processes all pages in bounded batches and stores each field with status, evidence, and validation results.</p></div>
               <div className="flex flex-wrap gap-2">
-                <Button variant="primary" disabled={busy || jobRunning || !docsReady || fields.length === 0 || !cloudConsent || !capabilities?.cloud_enabled || !capabilities?.llm_available} onClick={runExtraction}><RefreshCw className="h-4 w-4" /> {schemaDirty ? "Save and extract" : "Start extraction"}</Button>
+                {documents.some((doc) => doc.kind === "pdf") && <Button variant="primary" disabled={busy || jobRunning || !documents.filter((doc) => doc.kind === "pdf").every((doc) => doc.status === "ready") || fields.length === 0 || !cloudConsent || !capabilities?.cloud_enabled || !capabilities?.llm_available} onClick={runExtraction}><RefreshCw className="h-4 w-4" /> {schemaDirty ? "Save and extract PDFs" : "Start PDF extraction"}</Button>}
                 {jobRunning && <Button variant="danger" disabled={busy} onClick={cancelExtraction}><X className="h-4 w-4" /> Cancel job</Button>}
                 {["error", "cancelled"].includes(project.job.status) && (project.job.document_done ?? 0) < (project.job.document_total ?? 0) && <Button size="sm" disabled={busy || !cloudConsent || !capabilities?.cloud_enabled || !capabilities?.llm_available} onClick={resumeExtraction}><RefreshCw className="h-3.5 w-3.5" /> Resume unfinished work</Button>}
                 <a href={api.extractionExportUrl(project.id, "json")} onClick={(e) => { if (!allResultTotal) e.preventDefault(); }}><Button size="sm" disabled={allResultTotal === 0}><Download className="h-3.5 w-3.5" /> JSON</Button></a>
@@ -519,11 +562,12 @@ export default function ExtractionWorkspace() {
                     <div className="flex flex-wrap items-center gap-1.5"><Badge tone={statusTone(selectedCell.status)}>{selectedCell.status}</Badge><Badge>{selectedCell.review_status}</Badge>{typeof selectedCell.confidence === "number" && <Badge tone={selectedCell.confidence < LOW_CONFIDENCE ? "warn" : "good"}>confidence {Math.round(selectedCell.confidence * 100)}%</Badge>}</div>
                     {selectedCell.confidence_reasons?.length ? <ul className="list-disc space-y-0.5 pl-4 text-[11px] text-ink-2">{selectedCell.confidence_reasons.map((reason, i) => <li key={i}>{reason}</li>)}</ul> : null}
                     {selectedCell.evidence.length === 0 ? <p className="rounded-md bg-warn-soft p-2 text-xs text-warn">No supporting evidence was returned. Review this value before using it.</p> : selectedCell.evidence.map((evidence, index) => <div key={`${evidence.page}-${index}`} className={cn("rounded-md border bg-panel p-2.5", index === activeEvidenceIndex ? "border-accent ring-1 ring-accent/40" : "border-line")}>
-                      <div className="mb-1 flex items-center justify-between gap-2 text-[11px] text-muted"><span className="truncate">{evidence.filename ?? selectedRow.filename}</span><span className="shrink-0">{evidence.page ? `Page ${evidence.page}` : "Page not identified"}</span></div>
+                      <div className="mb-1 flex items-center justify-between gap-2 text-[11px] text-muted"><span className="truncate">{evidence.filename ?? selectedRow.filename}</span><span className="shrink-0">{evidence.page ? `Page ${evidence.page}` : evidence.sheet && evidence.address ? `${evidence.sheet}!${evidence.address}` : "Source not identified"}</span></div>
                       <blockquote className="border-l-2 border-accent pl-2 text-xs leading-relaxed text-ink">{evidence.text || "No quote supplied"}</blockquote>
                       <button className="mt-2 text-xs font-medium text-accent underline" onClick={() => setActiveEvidenceIndex(index)}>Show this source location</button>
                       {evidence.coordinate_status && <span className="ml-2 text-[10px] text-muted">{evidence.coordinate_status.replaceAll("_", " ")}</span>}
                       {evidence.page && <a className="mt-2 inline-flex text-xs font-medium text-accent underline" href={`${api.fileUrl(evidence.document_id ?? selectedRow.document_id)}#page=${evidence.page}`} target="_blank" rel="noreferrer">Open original PDF · page {evidence.page}</a>}
+                      {evidence.sheet && evidence.address && <a className="mt-2 inline-flex text-xs font-medium text-accent underline" href={api.spreadsheetRangeImageUrl(evidence.document_id ?? selectedRow.document_id, evidence.sheet, evidence.address)} target="_blank" rel="noreferrer">Open source cells · {evidence.sheet}!{evidence.address}</a>}
                     </div>)}
                     {selectedCell.validation_issues.length > 0 && <ul className="list-disc space-y-1 pl-4 text-xs text-warn">{selectedCell.validation_issues.map((issue, i) => <li key={i}>{issue}</li>)}</ul>}
                     {selectedCell.original_model_value && <details className="rounded-md bg-panel-2 p-2 text-xs text-ink-2"><summary className="cursor-pointer">Original model result</summary><pre className="mt-2 whitespace-pre-wrap">{JSON.stringify(selectedCell.original_model_value, null, 2)}</pre></details>}
