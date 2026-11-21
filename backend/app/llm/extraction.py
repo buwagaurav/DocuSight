@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from ..config import LLM_MODEL, LLM_PROVIDER
@@ -18,6 +19,15 @@ from .client import describe_error, effort, image_block, llm_available, messages
 
 MAX_CONTEXT_CHARS = 400_000   # ~100k tokens of document text per extraction call
 MAX_EXTRACT_IMAGES = 12
+# Long PDFs are read in page batches: one call over a long document drops fields from later pages and
+# truncates long lists (ExtractBench, arXiv:2607.29677). Small documents keep the single call.
+SINGLE_PASS_CHARS = 120_000
+SINGLE_PASS_PAGES = 30
+BATCH_CHARS = 60_000
+BATCH_MAX_PAGES = 15
+BATCH_IMAGES = 4
+MAX_BATCHES = 12              # cost cap: ~720k characters; anything beyond is reported as not covered
+BATCH_WORKERS = 3
 
 _S = {"type": "string"}
 _ARR = lambda props, req=None: {  # noqa: E731
@@ -65,6 +75,45 @@ financially essential ones as "critical". Copy values exactly as written (keep c
 - suggested_questions: 6 specific questions a user would likely ask about THIS document.
 - source: always say where (p.N, sheet/cell, or table name). Never invent values; omit what isn't there.
 {coverage}"""
+
+
+# per-batch extraction: the page-local parts of SCHEMA plus short notes for the final synthesis
+_BATCH_KEYS = ("key_fields", "metrics", "entities", "dates", "sections", "anomalies")
+BATCH_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["notes", *_BATCH_KEYS],
+    "properties": {"notes": {"type": "string", "description": "2-4 sentences: what these pages contain"},
+                   **{k: SCHEMA["properties"][k] for k in _BATCH_KEYS}},
+}
+_SYNTH_KEYS = ("document_type", "title", "summary", "language", "insights", "anomalies", "suggested_questions")
+SYNTH_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": list(_SYNTH_KEYS),
+    "properties": {k: SCHEMA["properties"][k] for k in _SYNTH_KEYS},
+}
+
+BATCH_PROMPT = """You are a meticulous document analyst reading pages {first}-{last} of a {n_pages}-page PDF \
+("{filename}"). Other pages are read separately, so extract only what appears on THESE pages.
+
+Rules:
+- key_fields: every identifying / contractual / financial / date / party / contact value on these pages. Mark legally or \
+financially essential ones as "critical". Copy values exactly as written (keep currency & units).
+- metrics: the headline numbers on these pages (totals, KPIs, growth rates, counts) with units.
+- sections: the parts of the document that appear on these pages, with a one-line description.
+- anomalies: anything suspicious or inconsistent on these pages (or empty).
+- notes: 2-4 sentences on what these pages contain, for writing the document summary later.
+- source: always the page, as p.N. Never invent values; omit what isn't there."""
+
+SYNTH_PROMPT = """You are writing the overview of a {n_pages}-page PDF ("{filename}") from notes taken while reading it \
+in parts, and the fields extracted from those parts. Write:
+- document_type, title, language.
+- summary: a 3-6 sentence executive summary of the WHOLE document.
+- insights: 3-8 non-obvious, decision-useful observations across the document.
+- anomalies: the important inconsistencies or risks (merge duplicates; empty if none).
+- suggested_questions: 6 specific questions a user would likely ask about THIS document.
+Use only the notes and fields given; never invent values.{coverage}"""
 
 
 def _pdf_context(doc_id: str) -> tuple[list[dict[str, Any]], str]:
@@ -161,6 +210,147 @@ def normalize_extraction(data: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _call(content: list[dict[str, Any]], schema: dict[str, Any], max_tokens: int = 32000) -> dict[str, Any]:
+    """One structured-output model call; raises on refusal or truncation."""
+    content = list(content)
+    if LLM_PROVIDER != "anthropic":
+        # Only Claude enforces output_config.format server-side; other providers accept the
+        # parameter but may answer in prose, so the schema has to be in the prompt itself.
+        content.append({"type": "text", "text": "Respond with ONLY one JSON object (no markdown, no prose, no code "
+                        f"fences) that validates against this JSON Schema:\n{json.dumps(schema)}"})
+    with messages_api().stream(
+        model=LLM_MODEL,
+        max_tokens=max_tokens,
+        output_config={"effort": effort("medium"), "format": {"type": "json_schema", "schema": schema}},
+        messages=[{"role": "user", "content": content}],
+        **provider_kwargs(),
+    ) as stream:
+        resp = stream.get_final_message()
+    if resp.stop_reason == "refusal":
+        raise RuntimeError("The model declined to process this document.")
+    if resp.stop_reason == "max_tokens":
+        raise RuntimeError("Extraction output was truncated (document too dense).")
+    return _parse_json(response_text(resp))
+
+
+def _page_texts(doc_id: str) -> list[str]:
+    meta, parents = store.docs[doc_id], store.parents.get(doc_id, {})
+    return [parents.get(f"{doc_id}:pp{p}", "") for p in range(1, meta.n_pages + 1)]
+
+
+def needs_batches(doc_id: str) -> bool:
+    meta = store.docs[doc_id]
+    return meta.kind == "pdf" and (meta.n_pages > SINGLE_PASS_PAGES or sum(map(len, _page_texts(doc_id))) > SINGLE_PASS_CHARS)
+
+
+def page_batches(doc_id: str) -> list[list[int]]:
+    """Consecutive page groups of at most BATCH_CHARS characters and BATCH_MAX_PAGES pages."""
+    batches: list[list[int]] = [[]]
+    chars = 0
+    for page, text in enumerate(_page_texts(doc_id), start=1):
+        if batches[-1] and (chars + len(text) > BATCH_CHARS or len(batches[-1]) >= BATCH_MAX_PAGES):
+            batches.append([])
+            chars = 0
+        batches[-1].append(page)
+        chars += len(text)
+    return [b for b in batches if b]
+
+
+def _batch_content(doc_id: str, pages: list[int]) -> list[dict[str, Any]]:
+    meta, texts = store.docs[doc_id], _page_texts(doc_id)
+    table_pages = {t.get("page") for t in meta.tables}
+    # images where text alone misses things: the first page, scanned pages, pages with tables
+    visual = [p for p in pages if p == 1 or len(texts[p - 1]) < 80 or p in table_pages][:BATCH_IMAGES]
+    content: list[dict[str, Any]] = []
+    for p in visual:
+        if store.page_path(doc_id, p).exists():
+            content += [{"type": "text", "text": f"Page {p} image:"}, image_block(store.page_path(doc_id, p))]
+    body = "\n".join(f"<page number=\"{p}\">\n{texts[p - 1]}\n</page>" for p in pages)
+    content.append({"type": "text", "text": f"<document filename=\"{meta.filename}\" pages=\"{meta.n_pages}\">\n{body}\n</document>"})
+    content.append({"type": "text", "text": BATCH_PROMPT.format(first=pages[0], last=pages[-1], n_pages=meta.n_pages,
+                                                                filename=meta.filename)})
+    return content
+
+
+def _key(*parts: str) -> str:
+    return "|".join(re.sub(r"\W+", "", p.casefold()) for p in parts)
+
+
+_RANK = {"critical": 0, "high": 1, "normal": 2}
+
+
+def merge_batches(parts: list[dict[str, Any]]) -> dict[str, Any]:
+    """Union of per-batch results in page order, duplicates removed (the highest importance wins)."""
+    merged: dict[str, Any] = {k: [] for k in _BATCH_KEYS}
+    seen: dict[str, dict[str, int]] = {k: {} for k in _BATCH_KEYS}
+    identity = {
+        "key_fields": lambda r: _key(r["label"], r["value"]), "metrics": lambda r: _key(r["label"], r["value"]),
+        "entities": lambda r: _key(r["name"]), "dates": lambda r: _key(r["label"], r["date"]),
+        "sections": lambda r: _key(r["title"], r["source"]), "anomalies": lambda r: _key(r),
+    }
+    for part in parts:
+        for k in _BATCH_KEYS:
+            for row in part.get(k, []):
+                ident = identity[k](row)
+                if ident in seen[k]:
+                    if k == "key_fields":
+                        old = merged[k][seen[k][ident]]
+                        if _RANK.get(row["importance"], 2) < _RANK.get(old["importance"], 2):
+                            old["importance"] = row["importance"]
+                    continue
+                seen[k][ident] = len(merged[k])
+                merged[k].append(row)
+    return merged
+
+
+def _batched_pdf_extraction(doc_id: str) -> dict[str, Any]:
+    meta = store.docs[doc_id]
+    batches = page_batches(doc_id)
+    covered, skipped = batches[:MAX_BATCHES], batches[MAX_BATCHES:]
+    done: dict[int, dict[str, Any]] = {}
+    failures: list[str] = []
+
+    def publish(summary: str) -> None:
+        partial = normalize_extraction({**merge_batches([done[i] for i in sorted(done)]), "summary": summary,
+                                        "title": meta.filename, "document_type": "PDF document"})
+        store.update(doc_id, extraction={**partial, "_engine": model_label()})
+
+    with ThreadPoolExecutor(max_workers=BATCH_WORKERS, thread_name_prefix="overview-batch") as pool:
+        futures = {pool.submit(_call, _batch_content(doc_id, pages), BATCH_SCHEMA): i for i, pages in enumerate(covered)}
+        for future in as_completed(futures):
+            i = futures[future]
+            pages = covered[i]
+            try:
+                part = future.result()
+                done[i] = {**normalize_extraction(part), "notes": str(part.get("notes", ""))}
+            except Exception as e:
+                failures.append(f"pages {pages[0]}-{pages[-1]}: {describe_error(e)}")
+                continue
+            # show fields as each part of the document is read
+            publish(f"Reading the document… {len(done)} of {len(covered)} parts done.")
+    if not done:
+        raise RuntimeError("; ".join(failures) or "No part of the document could be read.")
+
+    merged = merge_batches([done[i] for i in sorted(done)])
+    notes = "\n".join(f"Pages {covered[i][0]}-{covered[i][-1]}: {done[i]['notes']}" for i in sorted(done))
+    fields = "\n".join(f"- {f['label']}: {f['value']} ({f['source']}, {f['importance']})"
+                        for f in sorted(merged["key_fields"], key=lambda f: _RANK.get(f["importance"], 2))[:150])
+    coverage = ""
+    if skipped:
+        coverage = (f"\nNOTE: only pages 1-{covered[-1][-1]} of {meta.n_pages} were read (cost limit). Say so in the "
+                    "summary; the chat can search all of it.")
+    synth = _call([{"type": "text", "text": f"Notes by page range:\n{notes}\n\nExtracted fields:\n{fields}\n\n"
+                    f"Anomalies noted per part:\n" + "\n".join(f"- {a}" for a in merged["anomalies"])},
+                   {"type": "text", "text": SYNTH_PROMPT.format(n_pages=meta.n_pages, filename=meta.filename,
+                                                                coverage=coverage)}],
+                  SYNTH_SCHEMA, max_tokens=8000)
+    data = normalize_extraction({**merged, **{k: synth.get(k) for k in _SYNTH_KEYS}})
+    data["_batches"] = {"read": len(done), "total": len(batches), "pages_read": covered[-1][-1]}
+    if failures:
+        data["_error"] = "Some pages could not be read: " + "; ".join(failures)
+    return data
+
+
 def run_extraction(doc_id: str) -> None:
     meta = store.docs.get(doc_id)
     if not meta:
@@ -170,27 +360,13 @@ def run_extraction(doc_id: str) -> None:
         return
     store.update(doc_id, extraction_status="running")
     try:
-        content, coverage = _pdf_context(doc_id) if meta.kind == "pdf" else _excel_context(doc_id)
-        kind = "PDF document" if meta.kind == "pdf" else "spreadsheet"
-        content.append({"type": "text", "text": PROMPT.format(kind=kind, coverage=coverage)})
-        if LLM_PROVIDER != "anthropic":
-            # Only Claude enforces output_config.format server-side; other providers accept the
-            # parameter but may answer in prose, so the schema has to be in the prompt itself.
-            content.append({"type": "text", "text": "Respond with ONLY one JSON object (no markdown, no prose, no code "
-                            f"fences) that validates against this JSON Schema:\n{json.dumps(SCHEMA)}"})
-        with messages_api().stream(
-            model=LLM_MODEL,
-            max_tokens=32000,
-            output_config={"effort": effort("medium"), "format": {"type": "json_schema", "schema": SCHEMA}},
-            messages=[{"role": "user", "content": content}],
-            **provider_kwargs(),
-        ) as stream:
-            resp = stream.get_final_message()
-        if resp.stop_reason == "refusal":
-            raise RuntimeError("The model declined to process this document.")
-        if resp.stop_reason == "max_tokens":
-            raise RuntimeError("Extraction output was truncated (document too dense).")
-        data = normalize_extraction(_parse_json(response_text(resp)))
+        if needs_batches(doc_id):
+            data = _batched_pdf_extraction(doc_id)
+        else:
+            content, coverage = _pdf_context(doc_id) if meta.kind == "pdf" else _excel_context(doc_id)
+            kind = "PDF document" if meta.kind == "pdf" else "spreadsheet"
+            content.append({"type": "text", "text": PROMPT.format(kind=kind, coverage=coverage)})
+            data = normalize_extraction(_call(content, SCHEMA))
         data["_engine"] = model_label()
         store.update(doc_id, extraction=data, extraction_status="ready")
     except Exception as e:

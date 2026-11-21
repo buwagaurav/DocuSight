@@ -111,6 +111,9 @@ export interface ExtractionCell {
   evidence: { text: string; page: number | null; start_char?: number | null; end_char?: number | null; verified?: boolean | null; document_id?: string; filename?: string; coordinates?: { x0: number; y0: number; x1: number; y1: number; x: number; y: number; width: number; height: number }[]; coordinate_status?: "located" | "unavailable"; coordinate_source?: "pdf_text" | null }[];
   validation_issues: string[];
   review_status: string;
+  /** 0-1: how likely the value is right (model's own estimate adjusted by evidence checks); null for older results */
+  confidence?: number | null;
+  confidence_reasons?: string[];
   original_model_value?: { value: string; normalized_value: unknown; status: string } | null;
   previous_reviewed_value?: { value: string; normalized_value: unknown; corrected_at?: number } | null;
 }

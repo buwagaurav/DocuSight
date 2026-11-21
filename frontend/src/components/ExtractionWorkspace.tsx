@@ -18,6 +18,9 @@ function display(value: unknown) {
   return String(value);
 }
 
+// below this the backend routes the cell to review (app/extraction/confidence.py REVIEW_THRESHOLD)
+const LOW_CONFIDENCE = 0.6;
+
 function statusTone(status: string): "good" | "warn" | "bad" | "neutral" {
   if (status === "supported") return "good";
   if (status === "conflicting" || status === "illegible") return "bad";
@@ -499,7 +502,7 @@ export default function ExtractionWorkspace() {
                       <td className="border-t border-line p-2.5 font-medium text-ink">{row.label}</td><td className="max-w-40 truncate border-t border-line p-2.5 text-ink-2" title={row.filename}>{row.filename}</td>
                       {fields.map((field) => { const cell = row.fields[field.id]; const active = activeCell?.observationId === row.id && activeCell?.fieldId === field.id; return <td key={field.id} className="border-t border-line p-1.5">
                         <button onClick={() => openCell(row, field)} className={cn("flex w-full min-w-32 items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent-soft", active && "bg-accent-soft ring-1 ring-accent")}>
-                          <span className="max-w-40 truncate text-ink" title={cell?.value}>{cell?.value || "—"}</span><Badge tone={statusTone(cell?.status ?? "missing")}>{cell?.status ?? "missing"}</Badge>
+                          <span className="max-w-40 truncate text-ink" title={cell?.value}>{cell?.value || "—"}</span><span className="flex shrink-0 items-center gap-1">{typeof cell?.confidence === "number" && cell.status === "supported" && <span className={cn("tabular-nums text-[10px]", cell.confidence < LOW_CONFIDENCE ? "font-semibold text-warn" : "text-muted")} title="Confidence">{Math.round(cell.confidence * 100)}%</span>}<Badge tone={statusTone(cell?.status ?? "missing")}>{cell?.status ?? "missing"}</Badge></span>
                         </button>{cell?.validation_issues?.length ? <span className="mt-0.5 block truncate px-2 text-[10px] text-warn" title={cell.validation_issues.join(" ")}>{cell.validation_issues.length} validation issue(s)</span> : null}
                       </td>; })}
                     </tr>)}</tbody>
@@ -513,7 +516,8 @@ export default function ExtractionWorkspace() {
                 {!selectedCell || !selectedRow || !selectedField ? <div className="flex h-full min-h-44 flex-col items-center justify-center text-center text-sm text-muted"><FileText className="mb-2 h-6 w-6" />Select a result cell to inspect its evidence.</div> : (
                   <div className="space-y-3">
                     <div><div className="text-[11px] font-semibold uppercase tracking-wide text-muted">Evidence review</div><h3 className="mt-1 font-semibold text-ink">{selectedField.name}</h3><p className="text-xs text-ink-2">{selectedRow.label} · {selectedRow.filename}</p></div>
-                    <div className="flex flex-wrap items-center gap-1.5"><Badge tone={statusTone(selectedCell.status)}>{selectedCell.status}</Badge><Badge>{selectedCell.review_status}</Badge></div>
+                    <div className="flex flex-wrap items-center gap-1.5"><Badge tone={statusTone(selectedCell.status)}>{selectedCell.status}</Badge><Badge>{selectedCell.review_status}</Badge>{typeof selectedCell.confidence === "number" && <Badge tone={selectedCell.confidence < LOW_CONFIDENCE ? "warn" : "good"}>confidence {Math.round(selectedCell.confidence * 100)}%</Badge>}</div>
+                    {selectedCell.confidence_reasons?.length ? <ul className="list-disc space-y-0.5 pl-4 text-[11px] text-ink-2">{selectedCell.confidence_reasons.map((reason, i) => <li key={i}>{reason}</li>)}</ul> : null}
                     {selectedCell.evidence.length === 0 ? <p className="rounded-md bg-warn-soft p-2 text-xs text-warn">No supporting evidence was returned. Review this value before using it.</p> : selectedCell.evidence.map((evidence, index) => <div key={`${evidence.page}-${index}`} className={cn("rounded-md border bg-panel p-2.5", index === activeEvidenceIndex ? "border-accent ring-1 ring-accent/40" : "border-line")}>
                       <div className="mb-1 flex items-center justify-between gap-2 text-[11px] text-muted"><span className="truncate">{evidence.filename ?? selectedRow.filename}</span><span className="shrink-0">{evidence.page ? `Page ${evidence.page}` : "Page not identified"}</span></div>
                       <blockquote className="border-l-2 border-accent pl-2 text-xs leading-relaxed text-ink">{evidence.text || "No quote supplied"}</blockquote>

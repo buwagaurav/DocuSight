@@ -48,6 +48,8 @@ RERANK_ENABLED = _bool("RERANK_ENABLED", "true")
 CONTEXTUAL_RETRIEVAL = _bool("CONTEXTUAL_RETRIEVAL", "false")  # LLM-written chunk context (costs tokens)
 SEMANTIC_CACHE_THRESHOLD = float(os.getenv("SEMANTIC_CACHE_THRESHOLD", "0.97"))
 EXTRACTION_CLOUD_ENABLED = _bool("EXTRACTION_CLOUD_ENABLED", "false")
+# Second, targeted pass that asks again only for cells the first pass left empty (ScheMatiQ, arXiv:2604.09237)
+EXTRACTION_FOLLOW_UP = _bool("EXTRACTION_FOLLOW_UP", "true")
 EXTRACTION_PROJECTS_DIR = DATA_DIR / "extraction_projects"
 EXTRACTION_PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
 
