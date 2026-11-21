@@ -120,6 +120,38 @@ def _regions(grid: list[list[Any]]) -> list[list[list[Any]]]:
     return regions
 
 
+def _regions_with_bounds(grid: list[list[Any]]) -> list[tuple[list[list[Any]], tuple[int, int, int, int]]]:
+    """Same blank-row/column splitting as _regions, retaining 1-based source bounds."""
+    width = max((len(r) for r in grid), default=0)
+    padded = [list(r) + [None] * (width - len(r)) for r in grid]
+    out: list[tuple[list[list[Any]], tuple[int, int, int, int]]] = []
+    r = 0
+    while r < len(padded):
+        while r < len(padded) and all(_empty(v) for v in padded[r]):
+            r += 1
+        r0 = r
+        while r < len(padded) and not all(_empty(v) for v in padded[r]):
+            r += 1
+        if r0 == r:
+            continue
+        block = padded[r0:r]
+        used = [any(not _empty(row[c]) for row in block) for c in range(width)]
+        c = 0
+        while c < width:
+            if not used[c]:
+                c += 1
+                continue
+            c0 = c
+            while c < width and used[c]:
+                c += 1
+            vals = [row[c0:c] for row in block]
+            nonempty_rows = [i for i, row in enumerate(vals) if any(not _empty(v) for v in row)]
+            if nonempty_rows:
+                first, last = min(nonempty_rows), max(nonempty_rows)
+                out.append((vals[first:last + 1], (r0 + first + 1, c0 + 1, r0 + last + 1, c)))
+    return out
+
+
 def _is_text(v: Any) -> bool:
     return isinstance(v, str) and not _looks_numeric(v)
 
@@ -147,13 +179,15 @@ def _parse_region(rows: list[list[Any]]) -> dict[str, Any]:
 
     # title / caption rows: leading rows with a single filled cell on a wide block
     title_lines = []
+    leading_title_rows = 0
     while rows and width >= 3 and filled_counts[0] <= 1 and len(rows) > 2:
         title_lines.append(" ".join(_fmt(v) for v in rows[0] if not _empty(v)))
         rows, filled_counts = rows[1:], filled_counts[1:]
+        leading_title_rows += 1
 
     if len(rows) == 1 or width == 1:
         text = "\n".join(" | ".join(_fmt(v) for v in r if not _empty(v)) for r in rows)
-        return {"kind": "text", "text": "\n".join(title_lines + [text]).strip()}
+        return {"kind": "text", "text": "\n".join(title_lines + [text]).strip(), "header_offset": 0}
 
     # form-style label/value block
     if width <= 4 and len(rows) <= 60:
@@ -167,7 +201,7 @@ def _parse_region(rows: list[list[Any]]) -> dict[str, Any]:
                 vals = [_fmt(v) for v in r if not _empty(v)]
                 if vals:
                     lines.append(f"{vals[0].rstrip(':')}: {' | '.join(vals[1:])}" if len(vals) > 1 else vals[0])
-            return {"kind": "kv", "text": "\n".join(title_lines + lines), "title": " ".join(title_lines)}
+            return {"kind": "kv", "text": "\n".join(title_lines + lines), "title": " ".join(title_lines), "header_offset": 0}
 
     # header detection (search first 10 rows), with multi-row header support
     best, best_score = 0, -1.0
@@ -215,10 +249,14 @@ def _parse_region(rows: list[list[Any]]) -> dict[str, Any]:
 
     data = rows[data_start:]
     df = pd.DataFrame(data, columns=clean_columns(cols))
+    source_column_offsets = [i for i, keep in enumerate(~df.isna().all(axis=0)) if keep]
     df = df.dropna(axis=1, how="all")
     df = df.loc[~df.apply(lambda r: all(_empty(v) for v in r), axis=1)]
+    source_row_offsets = [data_start + int(index) for index in df.index]
     df = coerce_types(df).reset_index(drop=True)
-    return {"kind": "table", "df": df, "title": " — ".join(t for t in title_lines if t)}
+    return {"kind": "table", "df": df, "title": " — ".join(t for t in title_lines if t),
+            "header_offset": leading_title_rows + best, "data_offset": leading_title_rows + data_start,
+            "source_row_offsets": source_row_offsets, "source_column_offsets": source_column_offsets}
 
 
 def _md_table(df: pd.DataFrame, start: int, end: int) -> str:
@@ -264,7 +302,7 @@ def ingest_excel(doc_id: str, path: Path, progress: Callable[[str, float], None]
         (preview_dir / f"{s_i}.json").write_text(json.dumps({"name": sheet, "rows": prev,
                                                              "total_rows": len(grid), "total_cols": width}))
         sheet_tables, notes = [], []
-        for region in _regions(grid):
+        for region, bounds in _regions_with_bounds(grid):
             parsed = _parse_region(region)
             if parsed["kind"] in {"text", "kv"}:
                 if parsed["text"].strip():
@@ -276,7 +314,11 @@ def ingest_excel(doc_id: str, path: Path, progress: Callable[[str, float], None]
             name = sanitize(f"{sheet}" if not sheet_tables else f"{sheet}_t{len(sheet_tables) + 1}", taken)
             cols = describe_df(df)
             tables.append({"name": name, "df": df, "source": f"sheet '{sheet}'", "title": parsed["title"] or sheet,
-                           "sheet": sheet})
+                           "sheet": sheet, "source_bounds": bounds,
+                           "header_row": bounds[0] + parsed.get("header_offset", 0),
+                           "data_start_row": bounds[0] + parsed.get("data_offset", 0),
+                           "source_row_offsets": parsed.get("source_row_offsets", []),
+                           "source_column_offsets": parsed.get("source_column_offsets", [])})
             sheet_tables.append(name)
 
             summary = _summary_text(sheet, name, parsed["title"], df, cols)

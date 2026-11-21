@@ -16,6 +16,7 @@ from .retrieval.colpali import colpali
 from .retrieval.hybrid import retriever
 from .retrieval.models import embed_passages, embedding_signature
 from .store import store
+from .spreadsheet_structure import build_structure
 from .tables import describe_df, write_tables
 
 _ingest_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ingest")
@@ -67,8 +68,13 @@ def _process(doc_id: str, auto_extract: bool = True, contextual_retrieval: bool 
         table_meta = [{
             "name": t["name"], "title": t["title"], "source": t["source"], "page": t.get("page"),
             "sheet": t.get("sheet"), "n_rows": int(len(t["df"])), "n_cols": int(len(t["df"].columns)),
-            "columns": describe_df(t["df"]),
+            "columns": describe_df(t["df"]), "source_bounds": t.get("source_bounds"),
+            "header_row": t.get("header_row"), "data_start_row": t.get("data_start_row"),
+            "source_row_offsets": t.get("source_row_offsets", []),
+            "source_column_offsets": t.get("source_column_offsets", []),
         } for t in tables]
+        if meta.kind != "pdf":
+            build_structure(doc_id, info, table_meta, path)
         store.update(doc_id, tables=table_meta)
         if tables:
             techniques.append("Text-to-SQL tables (DuckDB)")
