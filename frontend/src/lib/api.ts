@@ -1,5 +1,36 @@
 export const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
+// ---- access password (backend: DOCUSIGHT_ACCESS_PASSWORD; open when unset) ----
+const TOKEN_KEY = "docusight.token";
+export const SIGN_IN_EVENT = "docusight:sign-in";
+
+export function getToken(): string {
+  try { return localStorage.getItem(TOKEN_KEY) ?? ""; } catch { return ""; }
+}
+export function setToken(token: string) {
+  try { if (token) localStorage.setItem(TOKEN_KEY, token); else localStorage.removeItem(TOKEN_KEY); } catch {}
+}
+
+/** fetch() against the API with the sign-in token; a 401 asks the app to show the sign-in screen. */
+export async function apiFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const token = getToken();
+  const headers = new Headers(init.headers);
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const res = await fetch(url, { ...init, headers });
+  if (res.status === 401 && !url.includes("/api/auth/")) {
+    setToken("");
+    if (typeof window !== "undefined") window.dispatchEvent(new Event(SIGN_IN_EVENT));
+  }
+  return res;
+}
+
+/** Links the browser opens itself (images, downloads) can't send headers, so they carry the token. */
+export function withToken(url: string): string {
+  const token = getToken();
+  if (!token) return url;
+  return `${url}${url.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`;
+}
+
 export interface ColumnInfo {
   name: string;
   type: string;
@@ -249,44 +280,48 @@ async function j<T>(res: Response): Promise<T> {
 }
 
 export const api = {
-  health: () => fetch(`${API}/api/health`).then((r) => j<Health>(r)),
-  docs: () => fetch(`${API}/api/documents`).then((r) => j<Doc[]>(r)),
+  health: () => apiFetch(`${API}/api/health`).then((r) => j<Health>(r)),
+  authStatus: () => apiFetch(`${API}/api/auth/status`).then((r) => j<{ required: boolean; signed_in: boolean }>(r)),
+  login: (password: string) =>
+    apiFetch(`${API}/api/auth/login`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }) }).then((r) => j<{ token: string; expires_at: number | null }>(r)),
+  docs: () => apiFetch(`${API}/api/documents`).then((r) => j<Doc[]>(r)),
   upload: (files: File[]) => {
     const fd = new FormData();
     files.forEach((f) => fd.append("files", f));
-    return fetch(`${API}/api/documents`, { method: "POST", body: fd }).then((r) => j<Doc[]>(r));
+    return apiFetch(`${API}/api/documents`, { method: "POST", body: fd }).then((r) => j<Doc[]>(r));
   },
-  remove: (id: string) => fetch(`${API}/api/documents/${id}`, { method: "DELETE" }).then((r) => j(r)),
-  reExtract: (id: string) => fetch(`${API}/api/documents/${id}/extract`, { method: "POST" }).then((r) => j(r)),
-  pageUrl: (id: string, page: number) => `${API}/api/documents/${id}/pages/${page}`,
-  fileUrl: (id: string) => `${API}/api/documents/${id}/file`,
+  remove: (id: string) => apiFetch(`${API}/api/documents/${id}`, { method: "DELETE" }).then((r) => j(r)),
+  reExtract: (id: string) => apiFetch(`${API}/api/documents/${id}/extract`, { method: "POST" }).then((r) => j(r)),
+  pageUrl: (id: string, page: number) => withToken(`${API}/api/documents/${id}/pages/${page}`),
+  fileUrl: (id: string) => withToken(`${API}/api/documents/${id}/file`),
   locate: (id: string, text: string, source: string) =>
-    fetch(`${API}/api/documents/${id}/locate?${new URLSearchParams({ text, source })}`).then((r) => j<Located>(r)),
+    apiFetch(`${API}/api/documents/${id}/locate?${new URLSearchParams({ text, source })}`).then((r) => j<Located>(r)),
   sheet: (id: string, index: number) =>
-    fetch(`${API}/api/documents/${id}/sheets/${index}`).then((r) =>
+    apiFetch(`${API}/api/documents/${id}/sheets/${index}`).then((r) =>
       j<{ name: string; rows: string[][]; total_rows: number; total_cols: number }>(r),
     ),
   spreadsheetStructure: (id: string) =>
-    fetch(`${API}/api/documents/${id}/spreadsheet-structure`).then((r) => j<SpreadsheetStructure>(r)),
+    apiFetch(`${API}/api/documents/${id}/spreadsheet-structure`).then((r) => j<SpreadsheetStructure>(r)),
   spreadsheetRange: (id: string, sheet: string, address: string) =>
-    fetch(`${API}/api/documents/${id}/sheets/${encodeURIComponent(sheet)}/range?address=${encodeURIComponent(address)}`).then((r) => j<SpreadsheetRange>(r)),
+    apiFetch(`${API}/api/documents/${id}/sheets/${encodeURIComponent(sheet)}/range?address=${encodeURIComponent(address)}`).then((r) => j<SpreadsheetRange>(r)),
   spreadsheetRangeImageUrl: (id: string, sheet: string, address: string) =>
-    `${API}/api/documents/${id}/sheets/${encodeURIComponent(sheet)}/range.png?address=${encodeURIComponent(address)}`,
+    withToken(`${API}/api/documents/${id}/sheets/${encodeURIComponent(sheet)}/range.png?address=${encodeURIComponent(address)}`),
   verifySpreadsheetStructure: (id: string, addresses: string[], sheet: string, cloud_consent: boolean) =>
-    fetch(`${API}/api/documents/${id}/spreadsheet-structure/verify`, { method: "POST", headers: { "Content-Type": "application/json" },
+    apiFetch(`${API}/api/documents/${id}/spreadsheet-structure/verify`, { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ addresses, sheet, cloud_consent }) }).then((r) => j<{ status: string; assessments: { sheet: string; address: string; status: string; note: string }[]; vision_status: string }>(r)),
   table: (id: string, name: string, limit = 2000) =>
-    fetch(`${API}/api/documents/${id}/tables/${name}?limit=${limit}`).then((r) =>
+    apiFetch(`${API}/api/documents/${id}/tables/${name}?limit=${limit}`).then((r) =>
       j<{ columns: string[]; rows: unknown[][]; total: number }>(r),
     ),
   sql: (id: string, sql: string) =>
-    fetch(`${API}/api/documents/${id}/sql`, {
+    apiFetch(`${API}/api/documents/${id}/sql`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sql }),
     }).then((r) => j<{ columns: string[]; rows: unknown[][]; row_count: number; truncated: boolean }>(r)),
   search: (query: string, doc_ids: string[], colpali: boolean, rerank: boolean) =>
-    fetch(`${API}/api/search`, {
+    apiFetch(`${API}/api/search`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ query, doc_ids, colpali, rerank, k: 10 }),
@@ -297,65 +332,65 @@ export const api = {
         trace: Record<string, unknown>;
       }>(r),
     ),
-  extractionCapabilities: () => fetch(`${API}/api/extraction/capabilities`).then((r) => j<ExtractionCapabilities>(r)),
-  extractionProjects: () => fetch(`${API}/api/extraction/projects`).then((r) => j<(ExtractionProject & { observation_count: number; field_count: number })[]>(r)),
-  extractionProject: (id: string) => fetch(`${API}/api/extraction/projects/${id}`).then((r) => j<ExtractionProject>(r)),
+  extractionCapabilities: () => apiFetch(`${API}/api/extraction/capabilities`).then((r) => j<ExtractionCapabilities>(r)),
+  extractionProjects: () => apiFetch(`${API}/api/extraction/projects`).then((r) => j<(ExtractionProject & { observation_count: number; field_count: number })[]>(r)),
+  extractionProject: (id: string) => apiFetch(`${API}/api/extraction/projects/${id}`).then((r) => j<ExtractionProject>(r)),
   createExtractionProject: (name: string, objective: string) =>
-    fetch(`${API}/api/extraction/projects`, { method: "POST", headers: { "Content-Type": "application/json" },
+    apiFetch(`${API}/api/extraction/projects`, { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name, objective }) }).then((r) => j<ExtractionProject>(r)),
   patchExtractionProject: (id: string, body: Partial<Pick<ExtractionProject, "name" | "objective" | "observation_unit">>) =>
-    fetch(`${API}/api/extraction/projects/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" },
+    apiFetch(`${API}/api/extraction/projects/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body) }).then((r) => j<ExtractionProject>(r)),
   uploadExtractionDocuments: (id: string, files: File[]) => {
     const fd = new FormData();
     files.forEach((f) => fd.append("files", f));
-    return fetch(`${API}/api/extraction/projects/${id}/documents`, { method: "POST", body: fd }).then((r) => j<Doc[]>(r));
+    return apiFetch(`${API}/api/extraction/projects/${id}/documents`, { method: "POST", body: fd }).then((r) => j<Doc[]>(r));
   },
-  extractionDocuments: (id: string) => fetch(`${API}/api/extraction/projects/${id}/documents`).then((r) => j<Doc[]>(r)),
+  extractionDocuments: (id: string) => apiFetch(`${API}/api/extraction/projects/${id}/documents`).then((r) => j<Doc[]>(r)),
   attachSpreadsheetDocument: (projectId: string, docId: string) =>
-    fetch(`${API}/api/extraction/projects/${projectId}/spreadsheet-documents/${docId}`, { method: "POST" }).then((r) => j(r)),
+    apiFetch(`${API}/api/extraction/projects/${projectId}/spreadsheet-documents/${docId}`, { method: "POST" }).then((r) => j(r)),
   extractSpreadsheetSchema: (projectId: string, document_ids?: string[]) =>
-    fetch(`${API}/api/extraction/projects/${projectId}/spreadsheet-extract`, { method: "POST", headers: { "Content-Type": "application/json" },
+    apiFetch(`${API}/api/extraction/projects/${projectId}/spreadsheet-extract`, { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ document_ids: document_ids ?? [] }) }).then((r) => j<{ observation_count: number; observations: ExtractionObservation[]; unmatched_fields: string[] }>(r)),
   discoverExtractionSchema: (id: string, body: { objective: string; observation_unit: string; cloud_consent: boolean }) =>
-    fetch(`${API}/api/extraction/projects/${id}/discover`, { method: "POST", headers: { "Content-Type": "application/json" },
+    apiFetch(`${API}/api/extraction/projects/${id}/discover`, { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body) }).then((r) => j<{ observation_unit: string; reasoning: string; fields: ExtractionField[] }>(r)),
   saveExtractionSchema: (id: string, body: { objective: string; observation_unit: string; fields: ExtractionField[] }) =>
-    fetch(`${API}/api/extraction/projects/${id}/schema`, { method: "PUT", headers: { "Content-Type": "application/json" },
+    apiFetch(`${API}/api/extraction/projects/${id}/schema`, { method: "PUT", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body) }).then((r) => j<ExtractionProject>(r)),
   reuseExtractionSchema: (id: string, source_project_id: string) =>
-    fetch(`${API}/api/extraction/projects/${id}/reuse-schema`, { method: "POST", headers: { "Content-Type": "application/json" },
+    apiFetch(`${API}/api/extraction/projects/${id}/reuse-schema`, { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ source_project_id }) }).then((r) => j<ExtractionProject>(r)),
   extractionResults: (id: string, options: { limit?: number; offset?: number; q?: string; sort_by?: "document" | "observation" }) => {
     const params = new URLSearchParams({ limit: String(options.limit ?? 100), offset: String(options.offset ?? 0),
       q: options.q ?? "", sort_by: options.sort_by ?? "document" });
-    return fetch(`${API}/api/extraction/projects/${id}/results?${params}`).then((r) =>
+    return apiFetch(`${API}/api/extraction/projects/${id}/results?${params}`).then((r) =>
       j<{ total: number; all_total: number; offset: number; limit: number; observations: ExtractionObservation[] }>(r));
   },
-  extractionEstimate: (id: string) => fetch(`${API}/api/extraction/projects/${id}/estimate`).then((r) =>
+  extractionEstimate: (id: string) => apiFetch(`${API}/api/extraction/projects/${id}/estimate`).then((r) =>
     j<{ ready_documents: number; pages: number; estimated_input_tokens: number; estimated_cost: number | null; note: string }>(r)),
   startExtraction: (id: string, body: { cloud_consent: boolean; document_ids?: string[] }) =>
-    fetch(`${API}/api/extraction/projects/${id}/extract`, { method: "POST", headers: { "Content-Type": "application/json" },
+    apiFetch(`${API}/api/extraction/projects/${id}/extract`, { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body) }).then((r) => j<ExtractionProject>(r)),
   rerunExtraction: (id: string, body: { cloud_consent: boolean; document_ids?: string[]; field_ids?: string[]; observation_ids?: string[] }) =>
-    fetch(`${API}/api/extraction/projects/${id}/rerun`, { method: "POST", headers: { "Content-Type": "application/json" },
+    apiFetch(`${API}/api/extraction/projects/${id}/rerun`, { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body) }).then((r) => j<ExtractionProject>(r)),
   resumeExtraction: (id: string, cloud_consent: boolean) =>
-    fetch(`${API}/api/extraction/projects/${id}/resume`, { method: "POST", headers: { "Content-Type": "application/json" },
+    apiFetch(`${API}/api/extraction/projects/${id}/resume`, { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ cloud_consent }) }).then((r) => j<ExtractionProject>(r)),
-  cancelExtraction: (id: string) => fetch(`${API}/api/extraction/projects/${id}/cancel`, { method: "POST" }).then((r) => j<ExtractionProject>(r)),
+  cancelExtraction: (id: string) => apiFetch(`${API}/api/extraction/projects/${id}/cancel`, { method: "POST" }).then((r) => j<ExtractionProject>(r)),
   correctExtractionCell: (id: string, observationId: string, fieldId: string, body: { value: string; normalized_value: unknown; status: string }) =>
-    fetch(`${API}/api/extraction/projects/${id}/results/${observationId}/fields/${fieldId}`, { method: "PATCH",
+    apiFetch(`${API}/api/extraction/projects/${id}/results/${observationId}/fields/${fieldId}`, { method: "PATCH",
       headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<ExtractionCell>(r)),
   correctEvidenceCoordinates: (id: string, observationId: string, fieldId: string, evidenceIndex: number, coordinates: { x: number; y: number; width: number; height: number }[]) =>
-    fetch(`${API}/api/extraction/projects/${id}/results/${observationId}/fields/${fieldId}/evidence/${evidenceIndex}/coordinates`, {
+    apiFetch(`${API}/api/extraction/projects/${id}/results/${observationId}/fields/${fieldId}/evidence/${evidenceIndex}/coordinates`, {
       method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ coordinates }) }).then((r) => j(r)),
   annotatedPdfUrl: (id: string, observationId: string, fieldId: string) => {
     const params = new URLSearchParams({ observation_id: observationId, field_id: fieldId });
-    return `${API}/api/extraction/projects/${id}/rendered.pdf?${params}`;
+    return withToken(`${API}/api/extraction/projects/${id}/rendered.pdf?${params}`);
   },
-  deleteExtractionProject: (id: string) => fetch(`${API}/api/extraction/projects/${id}`, { method: "DELETE" }).then((r) => j<{ ok: boolean }>(r)),
-  extractionExportUrl: (id: string, format: "json" | "csv" | "xlsx") => `${API}/api/extraction/projects/${id}/export/${format}`,
+  deleteExtractionProject: (id: string) => apiFetch(`${API}/api/extraction/projects/${id}`, { method: "DELETE" }).then((r) => j<{ ok: boolean }>(r)),
+  extractionExportUrl: (id: string, format: "json" | "csv" | "xlsx") => withToken(`${API}/api/extraction/projects/${id}/export/${format}`),
 };
 
 /** POST /api/chat and yield server-sent events. */
@@ -363,7 +398,7 @@ export async function* streamChat(
   body: { question: string; history: { role: string; content: string }[]; doc_ids: string[]; options: ChatOptions },
   signal: AbortSignal,
 ): AsyncGenerator<ChatEvent> {
-  const res = await fetch(`${API}/api/chat`, {
+  const res = await apiFetch(`${API}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

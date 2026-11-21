@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import pipeline
+from .auth import AuthMiddleware, router as auth_router
 from .config import COLPALI_MODEL, CORS_ORIGINS, OCR_MODEL, RERANK_MODEL
 from .ingest.ocr import ocr_available
 from .llm.agent import cache, run_agent
@@ -36,7 +37,9 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="DocuSight", version="1.0", lifespan=lifespan)
+app.add_middleware(AuthMiddleware)   # before CORS, so CORS wraps it and 401s stay readable cross-origin
 app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS, allow_methods=["*"], allow_headers=["*"])
+app.include_router(auth_router)
 app.include_router(extraction_router)
 
 MAX_UPLOAD = 200 * 1024 * 1024

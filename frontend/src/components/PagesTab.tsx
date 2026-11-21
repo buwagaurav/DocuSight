@@ -41,7 +41,7 @@ function RangeInspector({ doc, idx }: { doc: Doc; idx: number }) {
             <input aria-label="Spreadsheet cell range" value={rangeText} onChange={(event) => setRangeText(event.target.value)}
               placeholder="A1:D12" className="w-36 rounded-md border border-line bg-panel px-2 py-1.5 text-sm" />
             <Button size="sm" type="submit">Inspect range</Button>
-            {rangeResult && <a className="self-center text-xs text-accent underline" href={`${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"}/api/documents/${doc.id}/sheets/${encodeURIComponent(rangeResult.sheet)}/range.png?address=${encodeURIComponent(rangeResult.address)}`} target="_blank" rel="noreferrer">Open range image</a>}
+            {rangeResult && <a className="self-center text-xs text-accent underline" href={api.spreadsheetRangeImageUrl(doc.id, rangeResult.sheet, rangeResult.address)} target="_blank" rel="noreferrer">Open range image</a>}
           </form>
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
             <label className="flex items-center gap-1.5"><input type="checkbox" checked={reviewConsent} onChange={(event) => setReviewConsent(event.target.checked)} />I agree to send this selected range to the configured model for review.</label>
