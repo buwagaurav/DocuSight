@@ -22,6 +22,8 @@ from .. import pipeline
 from ..config import EXTRACTION_CLOUD_ENABLED
 from ..llm.client import llm_available, model_label
 from ..store import store
+from ..tables import preview
+from ..spreadsheet_structure import inspect_range, load_structure
 from .projects import projects
 from .rendering import render_annotated_pdf
 from .service import (
@@ -87,6 +89,10 @@ class CellCorrection(BaseModel):
 
 class EvidenceCorrection(BaseModel):
     coordinates: list[dict[str, float]]
+
+
+class SpreadsheetExtractionRequest(BaseModel):
+    document_ids: list[str] = Field(default_factory=list)
 
 
 def _project(project_id: str) -> dict[str, Any]:
@@ -194,6 +200,110 @@ async def upload_project_documents(project_id: str, files: list[UploadFile] = Fi
             # discovery or extraction; skip the RAG app's automatic LLM summary.
             pipeline.submit(doc_id, auto_extract=False, contextual_retrieval=False)
     return created
+
+
+@router.post("/projects/{project_id}/spreadsheet-documents/{doc_id}")
+def attach_spreadsheet_document(project_id: str, doc_id: str) -> dict[str, Any]:
+    project = _project(project_id)
+    _ensure_idle(project)
+    meta = store.docs.get(doc_id)
+    if not meta:
+        raise HTTPException(404, "Document not found")
+    if meta.kind == "pdf":
+        raise HTTPException(400, "Choose a spreadsheet document")
+    if meta.status != "ready":
+        raise HTTPException(409, "Wait for spreadsheet processing to finish")
+    if not (store.dir(doc_id) / "spreadsheet_structure.json").exists():
+        raise HTTPException(409, "Spreadsheet structure is not ready")
+    updated = projects.update(project_id, lambda p: p["documents"].append(doc_id)
+                              if doc_id not in p["documents"] else None)
+    return {"project_id": project_id, "document_id": doc_id,
+            "document_ids": updated.get("documents", []) if updated else []}
+
+
+@router.post("/projects/{project_id}/spreadsheet-extract")
+def extract_spreadsheet_schema(project_id: str, body: SpreadsheetExtractionRequest) -> dict[str, Any]:
+    project = _project(project_id)
+    _ensure_idle(project)
+    fields = normalize_fields(project.get("schema", {}).get("fields", []))
+    if not fields:
+        raise HTTPException(409, "Save a schema before extracting spreadsheet values")
+    doc_ids = body.document_ids or [doc_id for doc_id in project.get("documents", [])
+                                    if doc_id in store.docs and store.docs[doc_id].kind != "pdf"]
+    if not doc_ids:
+        raise HTTPException(400, "Attach at least one spreadsheet document")
+    observations = []
+    for doc_id in doc_ids:
+        meta = store.docs.get(doc_id)
+        if not meta or doc_id not in project.get("documents", []) or meta.kind == "pdf":
+            raise HTTPException(400, "Every selected document must be an attached spreadsheet")
+        if meta.status != "ready":
+            raise HTTPException(409, f"{meta.filename} is not ready")
+        structure = load_structure(doc_id)
+        tables = [table for table in meta.tables if table.get("sheet")]
+        rows_by_label: dict[tuple[str, str], dict[str, Any]] = {}
+        for table in tables:
+            bounds = table.get("source_bounds")
+            if not bounds:
+                continue
+            values = preview(store.tables_db(doc_id), table["name"], limit=5000, offset=0)
+            cols = [str(name) for name in values.get("columns", [])]
+            source_sheet = table["sheet"]
+            sheet_info = next((s for s in structure["sheets"] if s["name"] == source_sheet), None)
+            if not sheet_info:
+                continue
+            region = next((r for r in sheet_info["regions"] if r.get("table") == table["name"]), None)
+            for row_index, values_row in enumerate(values.get("rows", [])):
+                label = f"{source_sheet} row {row_index + 1}"
+                observation = rows_by_label.setdefault((source_sheet, label), {
+                    "id": f"{doc_id}:{source_sheet}:{row_index}", "record_key": label, "label": label,
+                    "document_id": doc_id, "filename": meta.filename, "observation_unit": "spreadsheet row",
+                    "fields": {}, "spreadsheet_evidence": True,
+                })
+                for field in fields:
+                    def key(value: str) -> str:
+                        return re.sub(r"[^a-z0-9]", "", value.casefold())
+                    candidates = [field["name"], field.get("description", "")]
+                    col_index = next((i for i, col in enumerate(cols) if key(col) in {key(c) for c in candidates if c}), None)
+                    if col_index is None or col_index >= len(values_row):
+                        continue
+                    value = values_row[col_index]
+                    if value is None or str(value).strip() == "":
+                        continue
+                    column = bounds[1] + (table.get("source_column_offsets") or list(range(len(cols))))[col_index]
+                    source_row = bounds[0] + (table.get("source_row_offsets") or
+                                               [table.get("data_start_row", bounds[0] + 1) - bounds[0] + i
+                                                for i in range(len(values.get("rows", [])))])[row_index]
+                    from ..spreadsheet_structure import _cell_address
+                    address = _cell_address(source_row, column)
+                    source_cell = inspect_range(doc_id, source_sheet, address)["rows"][0][0]
+                    raw_value = source_cell.get("raw_value")
+                    def comparable(value: Any) -> str:
+                        text = str(value if value is not None else "").strip().casefold()
+                        negative = text.startswith("(") and text.endswith(")")
+                        text = re.sub(r"[,$%()]", "", text).strip()
+                        return f"-{text}" if negative else text
+                    verified = raw_value is not None and comparable(raw_value) == comparable(value)
+                    evidence = {"document_id": doc_id, "filename": meta.filename, "sheet": source_sheet,
+                                "table": table["name"], "address": address, "range": address,
+                                "text": str(raw_value if raw_value is not None else value),
+                                "raw_value": raw_value, "formula": source_cell.get("formula"),
+                                "cached_value": source_cell.get("cached_value"),
+                                "verified": verified,
+                                "verification_status": "source_cell_match" if verified else "source_cell_mismatch"}
+                    observation["fields"][field["id"]] = {
+                        "field_id": field["id"], "document_id": doc_id, "value": str(value),
+                        "raw_value": str(raw_value if raw_value is not None else value), "normalized_value": value if verified else None,
+                        "status": "supported" if verified else "unsupported", "evidence": [evidence],
+                        "validation_issues": [] if verified else ["Source cell value did not match the parsed table row."],
+                        "review_status": "unreviewed", "model": "deterministic-spreadsheet",
+                    }
+        observations.extend(rows_by_label.values())
+    projects.update(project_id, lambda p: p.update({"observations": [row for row in p.get("observations", [])
+                                                                      if row.get("document_id") not in doc_ids] + observations,
+                                                       "status": "complete"}))
+    return {"project_id": project_id, "observation_count": len(observations), "observations": observations,
+            "method": "deterministic column-name matching with source-cell coordinates"}
 
 
 @router.get("/projects/{project_id}/documents")
